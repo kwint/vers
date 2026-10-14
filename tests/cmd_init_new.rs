@@ -507,6 +507,16 @@ fn new_message_from_editor() {
         .stdout("Created changes/written-in-the-editor.added.md\n");
     assert_eq!(repo.read("changes/written-in-the-editor.added.md"), "Written in the editor.\n");
 
+    // The instructions vers puts in the file are removed again.
+    repo.write(
+        "keep.sh",
+        "#!/bin/sh\n{ printf 'Kept the instructions.'; cat \"$1\"; } > \"$1.new\" && mv \"$1.new\" \"$1\"\n",
+    );
+    let editor = repo.path("keep.sh");
+    std::fs::set_permissions(&editor, std::fs::Permissions::from_mode(0o755)).unwrap();
+    repo.vers().args(["new", "added"]).env("EDITOR", &editor).assert().success();
+    assert_eq!(repo.read("changes/kept-the-instructions.added.md"), "Kept the instructions.\n");
+
     // A failing editor creates nothing.
     repo.vers().args(["new", "added"]).env("VISUAL", "false").assert().code(1);
 }

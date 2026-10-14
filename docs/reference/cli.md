@@ -70,15 +70,40 @@ vers new [TYPE] [REF_OR_SLUG] [--ref <REF>]... [-m <MESSAGE>] [--breaking] [--pa
 
 | Argument / option | Description |
 |---|---|
-| `TYPE` | A change type or alias. If left out in an interactive terminal, vers asks for it. |
+| `TYPE` | A change type or alias. Required unless vers [asks for it](#interactive-mode). |
 | `REF_OR_SLUG` | The fragment name. A matching reference (`123`, `mr-45`, `PROJ-42`) is linked. Anything else is used as a slug. Default: a slug made from the first six words of the message. |
 | `--ref <REF>` | An extra reference, written to frontmatter. Can be repeated. |
-| `-m`, `--message <MESSAGE>` | Fragment content. Without it, vers opens `$VISUAL` or `$EDITOR`. If neither is set and stdin isn't a terminal, it reads stdin. |
+| `-m`, `--message <MESSAGE>` | Fragment content. Without it, vers opens `$VISUAL` or `$EDITOR`. If neither is set, vers asks for it in an interactive terminal, and reads stdin when stdin isn't a terminal. |
 | `--breaking` | Set `breaking: true` in frontmatter. |
 | `--package <NAME>` | Create the fragment in this package instead of the current one. |
 
 If a file with the same name already exists, vers adds a counter
 (`123.fixed.2.md`). Prints the path of the created file.
+
+### Interactive mode
+
+When stdin and stderr are both a terminal, `vers new` asks for everything you
+left out, so plain `vers new` walks you through creating a fragment:
+
+1. **Change type**, if `TYPE` isn't given: choose from the configured types
+   with the arrow keys and Enter, or type to filter the list.
+2. **Reference**, if `REF_OR_SLUG` isn't given: an issue or merge request
+   reference such as `123` or `mr-45` (the examples follow your configured
+   reference kinds), or a slug. Leave it empty to name the fragment after the
+   message. Invalid names are asked again.
+3. **Message**, if `-m` isn't given: vers opens `$VISUAL` or `$EDITOR` if one
+   is set, with a short instruction comment that's removed afterwards (if you
+   leave the message empty, vers offers to open the editor again). Otherwise
+   it asks for a one-line message.
+4. **Breaking change?**, if `--breaking` isn't given. The default is no.
+
+Questions go to stderr, so stdout only has the `Created …` line. Press Esc or
+Ctrl-C at any question to cancel: vers creates nothing, prints
+`error: cancelled; no fragment created` and exits with code 1.
+
+vers never asks when stdin or stderr isn't a terminal (in scripts and CI) or
+with `--format json`: a missing `TYPE` is then a usage error, and the message
+comes from `$VISUAL`/`$EDITOR` or stdin.
 
 ---
 

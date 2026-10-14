@@ -97,14 +97,14 @@ pub struct InitArgs {
 
 #[derive(Debug, Args)]
 pub struct NewArgs {
-    /// Change type or alias.
+    /// Change type or alias. Asked for in a terminal if left out.
     pub r#type: Option<String>,
     /// Fragment name: a reference (123, mr-45, PROJ-42) or a slug.
     pub name: Option<String>,
     /// An extra reference. Can be repeated.
     #[arg(long = "ref", value_name = "REF")]
     pub refs: Vec<String>,
-    /// Fragment content. Without it, $VISUAL or $EDITOR is opened.
+    /// Fragment content. Without it, $VISUAL or $EDITOR is opened, or vers asks for it in a terminal.
     #[arg(short, long)]
     pub message: Option<String>,
     /// Mark the change as breaking.

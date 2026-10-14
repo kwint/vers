@@ -65,6 +65,8 @@ Created changes/greet-people-by-name.added.md
 
 `added` is the *type* of change. vers uses the six Keep a Changelog types:
 `added`, `changed`, `deprecated`, `removed`, `fixed` and `security`.
+If you run `vers new` with no arguments in a terminal, it asks for everything
+it needs.
 
 Now record a bug fix that closes issue 7:
 
