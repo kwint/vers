@@ -113,14 +113,7 @@ pub fn apply_bump(current: &Version, bump: Bump, zero_major_shift: bool) -> Vers
     if bump == Bump::None {
         return current.clone();
     }
-    let bump = if zero_major_shift && current.major == 0 {
-        match bump {
-            Bump::Major => Bump::Minor,
-            _ => Bump::Patch,
-        }
-    } else {
-        bump
-    };
+    let bump = effective_bump(current, bump, zero_major_shift);
     let (x, y, z) = (current.major, current.minor, current.patch);
     let is_pre = !current.pre.is_empty();
     match bump {
@@ -131,6 +124,20 @@ pub fn apply_bump(current: &Version, bump: Bump, zero_major_shift: bool) -> Vers
         Bump::Patch if is_pre => Version::new(x, y, z),
         Bump::Patch => Version::new(x, y, z + 1),
         Bump::None => unreachable!("handled above"),
+    }
+}
+
+/// The bump actually applied to `current`: on 0.x with `zero_major_shift`,
+/// major becomes minor and minor becomes patch.
+fn effective_bump(current: &Version, bump: Bump, zero_major_shift: bool) -> Bump {
+    if zero_major_shift && current.major == 0 {
+        match bump {
+            Bump::Major => Bump::Minor,
+            Bump::Minor | Bump::Patch => Bump::Patch,
+            Bump::None => Bump::None,
+        }
+    } else {
+        bump
     }
 }
 
@@ -209,7 +216,7 @@ pub fn choose(input: &ChooseInput<'_>) -> Result<VersionPlan> {
                     "{} sets version {files}, but the pending fragments suggest a {} bump ({suggested}); \
                      releasing {files}",
                     path.display(),
-                    input.fragments_bump,
+                    effective_bump(c, input.fragments_bump, shift),
                 ));
             }
         }
@@ -296,11 +303,13 @@ pub fn agreed_version(
     if let Some(c) = current
         && newer(c, &first)
     {
+        let what = if versions.len() == 1 { "version file is" } else { "version files are" };
+        let list = versions.iter().map(|(v, p)| format!("\n  {}: {v}", p.display())).collect::<String>();
         return Err(Error::version_file(
             &first_path,
             format!(
-                "version {first} is older than the current version {c}; a release was probably made without vers \
-                 (hint: set the file to {c} or newer, or pass --force)"
+                "{what} older than the current version {c}:{list}\nhint: a release was probably made without \
+                 vers; set the files to {c} or newer, or pass --force"
             ),
         ));
     }

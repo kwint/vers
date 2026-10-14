@@ -332,6 +332,15 @@ fn choose_warns_when_fragments_suggest_more() {
     assert!(w.contains("package.json"), "{w}");
 }
 
+/// On 0.x the warning names the bump that would actually be applied.
+#[test]
+fn choose_warning_names_shifted_bump_on_zero_major() {
+    let p = run(In { current: Some("0.4.2"), files: Some("0.4.3"), bump: Bump::Major, ..Default::default() }).unwrap();
+    assert_eq!(p.next, v("0.4.3"));
+    let w = &p.warnings[0];
+    assert!(w.contains("suggest a minor bump (0.5.0)"), "{w}");
+}
+
 #[test]
 fn choose_no_warning_when_files_match_or_exceed_fragments() {
     let p = run(In { current: Some("1.4.2"), files: Some("1.5.0"), bump: Bump::Minor, ..Default::default() }).unwrap();
@@ -830,6 +839,18 @@ fn agreed_older_than_current() {
     let err = agreed_version(std::slice::from_ref(&a), Some(&v("1.1.0")), false).unwrap_err();
     let msg = err.to_string();
     assert!(msg.contains("Cargo.toml") && msg.contains("older than the current version 1.1.0"), "{msg}");
+}
+
+/// The docs promise an error "naming each file and the version in it".
+#[test]
+fn agreed_older_than_current_names_every_file() {
+    let d = Dir::new();
+    let a = d.whole("VERSION", "1.0.0\n");
+    let b = d.key("package.json", "{\"version\": \"1.0.0\"}", "version");
+    let msg = agreed_version(&[a, b], Some(&v("1.1.0")), false).unwrap_err().to_string();
+    assert!(msg.contains("version files are older than the current version 1.1.0"), "{msg}");
+    assert!(msg.contains("VERSION: 1.0.0") && msg.contains("package.json: 1.0.0"), "{msg}");
+    assert!(msg.contains("--force"), "{msg}");
 }
 
 #[test]
