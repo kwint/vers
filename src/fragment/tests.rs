@@ -470,10 +470,20 @@ fn load_all_reads_fragments_in_filename_order() {
 fn load_all_reports_bad_markdown_names() {
     let env = Env::new();
     env.write("a.added.md", "A.");
-    env.write("README.md", "About this directory.");
+    env.write("notes.md", "Some notes.");
     let err = load_all(&env.config).unwrap_err();
     let msg = err.to_string();
-    assert!(msg.contains("invalid fragment filename `README.md`"), "{msg}");
+    assert!(msg.contains("invalid fragment filename `notes.md`"), "{msg}");
+}
+
+#[test]
+fn load_all_ignores_readme() {
+    let env = Env::new();
+    env.write("a.added.md", "A.");
+    env.write("README.md", "About this directory.");
+    env.write("readme.md", "Lower case too.");
+    let all = load_all(&env.config).unwrap();
+    assert_eq!(all.len(), 1);
 }
 
 #[test]
