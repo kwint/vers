@@ -21,7 +21,7 @@ jobs:
           fetch-depth: 0
       - name: Install vers
         run: |
-          curl -LsSf https://github.com/kwint/vers/releases/latest/download/vers-installer.sh | sh
+          curl -LsSf https://github.com/kwint/vers/releases/latest/download/vers-changelog-installer.sh | sh
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
       - run: vers check
 ```
@@ -37,7 +37,7 @@ vers-check:
     GIT_DEPTH: 0
   before_script:
     - apk add --no-cache curl git
-    - curl -LsSf https://github.com/kwint/vers/releases/latest/download/vers-installer.sh | sh
+    - curl -LsSf https://github.com/kwint/vers/releases/latest/download/vers-changelog-installer.sh | sh
     - export PATH="$HOME/.local/bin:$PATH"
   script:
     - vers check

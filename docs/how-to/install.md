@@ -9,7 +9,7 @@ you already use.
 ### Standalone installer (macOS, Linux)
 
 ```sh
-curl -LsSf https://github.com/kwint/vers/releases/latest/download/vers-installer.sh | sh
+curl -LsSf https://github.com/kwint/vers/releases/latest/download/vers-changelog-installer.sh | sh
 ```
 
 The binary is installed to `~/.local/bin`. Update it later with
@@ -18,7 +18,7 @@ The binary is installed to `~/.local/bin`. Update it later with
 ### Standalone installer (Windows)
 
 ```powershell
-powershell -ExecutionPolicy ByPass -c "irm https://github.com/kwint/vers/releases/latest/download/vers-installer.ps1 | iex"
+powershell -ExecutionPolicy ByPass -c "irm https://github.com/kwint/vers/releases/latest/download/vers-changelog-installer.ps1 | iex"
 ```
 
 ### Package managers
@@ -75,7 +75,7 @@ version is needed.
 ```yaml
 - name: Install vers
   run: |
-    curl -LsSf https://github.com/kwint/vers/releases/download/v1.2.0/vers-installer.sh | sh
+    curl -LsSf https://github.com/kwint/vers/releases/download/v1.2.0/vers-changelog-installer.sh | sh
     echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 - run: vers check
 ```
@@ -87,7 +87,7 @@ vers-check:
   image: alpine:3
   before_script:
     - apk add --no-cache curl git
-    - curl -LsSf https://github.com/kwint/vers/releases/download/v1.2.0/vers-installer.sh | sh
+    - curl -LsSf https://github.com/kwint/vers/releases/download/v1.2.0/vers-changelog-installer.sh | sh
     - export PATH="$HOME/.local/bin:$PATH"
   script:
     - vers check
@@ -99,7 +99,7 @@ or `npx vers-changelog@1.2.0 check` also works without a separate install step.
 ### Any CI
 
 ```sh
-curl -LsSf https://github.com/kwint/vers/releases/download/v1.2.0/vers-installer.sh | sh
+curl -LsSf https://github.com/kwint/vers/releases/download/v1.2.0/vers-changelog-installer.sh | sh
 export PATH="$HOME/.local/bin:$PATH"
 ```
 

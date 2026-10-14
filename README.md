@@ -63,10 +63,10 @@ Pick whichever fits your setup. Each one gives you the same single binary.
 
 ```sh
 # macOS / Linux
-curl -LsSf https://github.com/kwint/vers/releases/latest/download/vers-installer.sh | sh
+curl -LsSf https://github.com/kwint/vers/releases/latest/download/vers-changelog-installer.sh | sh
 
 # Windows
-powershell -ExecutionPolicy ByPass -c "irm https://github.com/kwint/vers/releases/latest/download/vers-installer.ps1 | iex"
+powershell -ExecutionPolicy ByPass -c "irm https://github.com/kwint/vers/releases/latest/download/vers-changelog-installer.ps1 | iex"
 
 # Python tooling (no Python needed at runtime)
 uv tool install vers-changelog        # or: pipx install vers-changelog
