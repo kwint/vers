@@ -115,7 +115,9 @@ pub fn run(ctx: &Context, args: &ReleaseArgs) -> Result<()> {
         prepared.push(prepare(&plan, tag)?);
     }
 
-    // 2. Checks that need every package: git for tagging, no existing tags.
+    // 2. Checks that need every package: no conflicting files or tags, git for
+    //    tagging, no existing tags.
+    check_conflicts(ctx, &prepared)?;
     let tagging: Vec<&Prepared> = prepared.iter().filter(|p| p.tag.is_some()).collect();
     if !tagging.is_empty() {
         let Some(git) = git.as_ref() else {
@@ -192,19 +194,14 @@ pub fn run(ctx: &Context, args: &ReleaseArgs) -> Result<()> {
             Ok(i) => {
                 let p = &prepared[i];
                 ctx.line(format!("Releasing {} {} ({})", p.name, p.version, p.source));
-                let changelog_path = ctx.display_path(&p.changelog.path);
+                let changelog_path = show(ctx, &p.changelog.path);
                 if p.added_unreleased {
                     ctx.line(format!("  Added ## [Unreleased] to {changelog_path}"));
                 }
                 let verb = if p.changelog.old.is_some() { "Updated" } else { "Created" };
                 ctx.line(format!("  {verb} {changelog_path}"));
                 for vf in &p.version_files {
-                    ctx.line(format!(
-                        "  Updated {} ({} → {})",
-                        ctx.display_path(&vf.change.path),
-                        vf.old_version,
-                        p.version
-                    ));
+                    ctx.line(format!("  Updated {} ({} → {})", show(ctx, &vf.change.path), vf.old_version, p.version));
                 }
                 match p.fragments.len() {
                     0 => {}
@@ -317,12 +314,81 @@ fn source_text(plan: &PackagePlan, source: &VersionSource, config: &Config) -> S
     match source {
         VersionSource::Cli => "from command line".to_string(),
         VersionSource::Files(path) => {
-            format!("from {}", crate::context::display_relative(path, &config.dir))
+            format!("from {}", relative_path(path, &config.dir))
         }
         VersionSource::Inferred(_) if plan.current.is_none() => "initial".to_string(),
         VersionSource::Inferred(bump) => format!("inferred: {bump}"),
         VersionSource::FinalisePrerelease => "finalising pre-release".to_string(),
     }
+}
+
+/// `path` for display: relative to the current directory, using `..` when it's
+/// outside it (a package's changelog seen from a subdirectory, a workspace
+/// version file), always with `/`.
+fn show(ctx: &Context, path: &Path) -> String {
+    relative_path(path, &ctx.cwd)
+}
+
+/// `path` relative to `base`, with `..` components where needed and `/`
+/// separators. Falls back to the path as given when the two share no root
+/// (such as different drives on Windows).
+///
+/// TODO: `context::display_relative` shows paths outside `base` as absolute
+/// paths; this belongs there.
+fn relative_path(path: &Path, base: &Path) -> String {
+    let path_parts: Vec<_> = path.components().collect();
+    let base_parts: Vec<_> = base.components().collect();
+    let root = root_len(&path_parts);
+    if !path.is_absolute() || root == 0 || path_parts.get(..root) != base_parts.get(..root) {
+        return crate::context::display_relative(path, base);
+    }
+    let common = path_parts.iter().zip(&base_parts).take_while(|(a, b)| a == b).count();
+    let mut parts: Vec<String> = base_parts[common..].iter().map(|_| "..".to_string()).collect();
+    parts.extend(path_parts[common..].iter().map(|c| c.as_os_str().to_string_lossy().into_owned()));
+    if parts.is_empty() { ".".to_string() } else { parts.join("/") }
+}
+
+/// Number of leading components that make up the root (`/`, or `C:` + `\`).
+fn root_len(parts: &[std::path::Component]) -> usize {
+    parts.iter().take_while(|c| matches!(c, std::path::Component::Prefix(_) | std::path::Component::RootDir)).count()
+}
+
+/// Checks across packages that the per-package preparation can't make: two
+/// packages must not change the same file to different contents (a shared
+/// workspace version file released at two versions), and must not create the
+/// same tag (a `tag_format` without `{name}`).
+fn check_conflicts(ctx: &Context, prepared: &[Prepared]) -> Result<()> {
+    let mut seen: Vec<(&Path, &str, &str)> = Vec::new();
+    for p in prepared {
+        let mut changes = vec![&p.changelog];
+        changes.extend(p.version_files.iter().map(|vf| &vf.change));
+        for change in changes {
+            match seen.iter().find(|(path, _, _)| *path == change.path) {
+                Some((_, _, new)) if *new == change.new => {}
+                Some((path, other, _)) => {
+                    return Err(Error::Failed(format!(
+                        "`{other}` and `{}` would both change {} in different ways; release them one at a time",
+                        p.name,
+                        show(ctx, path)
+                    )));
+                }
+                None => seen.push((&change.path, &p.name, &change.new)),
+            }
+        }
+    }
+    let mut tags: Vec<(&str, &str)> = Vec::new();
+    for p in prepared {
+        let Some(tag) = p.tag.as_deref() else { continue };
+        if let Some((_, other)) = tags.iter().find(|(t, _)| *t == tag) {
+            return Err(Error::Failed(format!(
+                "`{other}` and `{}` would both be tagged `{tag}`; add `{{name}}` to `[version] tag_format`, \
+                 e.g. \"{{name}}@v{{version}}\"",
+                p.name
+            )));
+        }
+        tags.push((tag, &p.name));
+    }
+    Ok(())
 }
 
 fn write_file(change: &FileChange) -> Result<()> {
@@ -370,15 +436,18 @@ fn exists_in_head(git: &Git, path: &Path) -> bool {
 }
 
 fn print_dry_run(ctx: &Context, prepared: &[Prepared]) {
+    // A file shared by several packages (a workspace version file) is shown once.
+    let mut shown_paths: Vec<&Path> = Vec::new();
     for p in prepared {
         let mut changes = vec![&p.changelog];
         changes.extend(p.version_files.iter().map(|vf| &vf.change));
         for change in changes {
-            let shown = ctx.display_path(&change.path);
             let old = change.old.as_deref().unwrap_or("");
-            if old == change.new {
+            if old == change.new || shown_paths.contains(&change.path.as_path()) {
                 continue;
             }
+            shown_paths.push(&change.path);
+            let shown = show(ctx, &change.path);
             let from = if change.old.is_some() { format!("a/{shown}") } else { "/dev/null".to_string() };
             let diff = similar::TextDiff::from_lines(old, change.new.as_str())
                 .unified_diff()
@@ -388,7 +457,7 @@ fn print_dry_run(ctx: &Context, prepared: &[Prepared]) {
             ctx.line(diff.trim_end_matches('\n'));
         }
         for fragment in &p.fragments {
-            ctx.line(format!("delete {}", ctx.display_path(fragment)));
+            ctx.line(format!("delete {}", show(ctx, fragment)));
         }
     }
 }
@@ -397,14 +466,14 @@ fn json_output(ctx: &Context, prepared: &[Prepared], skipped: Vec<String>, dry_r
     let released = prepared
         .iter()
         .map(|p| {
-            let mut files = vec![ctx.display_path(&p.changelog.path)];
-            files.extend(p.version_files.iter().map(|vf| ctx.display_path(&vf.change.path)));
+            let mut files = vec![show(ctx, &p.changelog.path)];
+            files.extend(p.version_files.iter().map(|vf| show(ctx, &vf.change.path)));
             JsonRelease {
                 name: p.name.clone(),
                 version: p.version.to_string(),
                 source: p.source.clone(),
                 files,
-                removed: p.fragments.iter().map(|f| ctx.display_path(f)).collect(),
+                removed: p.fragments.iter().map(|f| show(ctx, f)).collect(),
                 tag: p.tag.clone(),
             }
         })

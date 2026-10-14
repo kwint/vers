@@ -851,3 +851,117 @@ fn files_above_initial_without_a_release_are_the_current_version() {
     repo.write("changes/b.fixed.md", "Fix.\n");
     repo.vers().args(["release", "--version", "1.0.0"]).assert().code(1);
 }
+
+// ---------------------------------------------------------------------------
+// Paths outside the current directory, shared files, shared tags
+// ---------------------------------------------------------------------------
+
+#[test]
+fn paths_outside_the_current_directory_use_dot_dot() {
+    let repo = monorepo();
+    repo.write("packages/api/src/lib.rs", "");
+    repo.write("packages/api/changes/a.fixed.md", "Fix.\n");
+    let out = repo.vers_in("packages/api/src").args(["release", "--dry-run"]).output().unwrap();
+    assert!(out.status.success(), "{}", stderr(&out));
+    let text = stdout(&out);
+    assert!(text.starts_with("--- a/../CHANGELOG.md\n+++ b/../CHANGELOG.md\n"), "{text}");
+    assert!(text.contains("--- a/../Cargo.toml\n+++ b/../Cargo.toml\n"), "{text}");
+    assert!(text.ends_with("delete ../changes/a.fixed.md\n"), "{text}");
+
+    let out = repo.vers_in("packages/api/src").args(["--format", "json", "release", "--dry-run"]).output().unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["released"][0]["files"], serde_json::json!(["../CHANGELOG.md", "../Cargo.toml"]));
+    assert_eq!(json["released"][0]["removed"], serde_json::json!(["../changes/a.fixed.md"]));
+
+    repo.vers_in("packages/api/src").arg("release").assert().success().stdout(
+        "Releasing api 1.4.1 (inferred: patch)\n  Updated ../CHANGELOG.md\n  Updated ../Cargo.toml (1.4.0 → 1.4.1)\n  Removed 1 fragment\n",
+    );
+}
+
+/// Two crates sharing the workspace version in the root `Cargo.toml`, both at
+/// 1.0.0 in their changelogs.
+fn workspace() -> TestRepo {
+    let repo = TestRepo::new();
+    repo.write("Cargo.toml", "[workspace.package]\nversion = \"1.0.0\"\n");
+    for name in ["a", "b"] {
+        repo.write(
+            &format!("crates/{name}/vers.toml"),
+            &format!(
+                "[package]\nname = \"{name}\"\n\n[version]\ntag_format = \"{{name}}@v{{version}}\"\n\n\
+                 [[version.files]]\npath = \"../../Cargo.toml\"\nkey = \"workspace.package.version\"\n"
+            ),
+        );
+        repo.write(&format!("crates/{name}/CHANGELOG.md"), &changelog_with(&["1.0.0"]));
+        repo.write(&format!("crates/{name}/changes/.gitkeep"), "");
+    }
+    repo.commit("Set up vers", Some("2026-01-01T00:00:00Z"));
+    repo
+}
+
+#[test]
+fn workspace_version_file_is_shown_relative_to_the_package() {
+    let repo = workspace();
+    repo.write("Cargo.toml", "[workspace.package]\nversion = \"1.1.0\"\n");
+    repo.write("crates/a/changes/x.fixed.md", "Fix.\n");
+    repo.vers_in("crates/a")
+        .arg("release")
+        .assert()
+        .success()
+        .stdout("Releasing a 1.1.0 (from ../../Cargo.toml)\n  Updated CHANGELOG.md\n  Removed 1 fragment\n");
+}
+
+#[test]
+fn packages_changing_a_shared_file_differently_abort_all_writes() {
+    let repo = workspace();
+    repo.write("crates/a/changes/x.fixed.md", "Fix.\n");
+    repo.write("crates/b/changes/y.added.md", "Add.\n");
+    repo.commit("Fragments", Some("2026-02-01T00:00:00Z"));
+    for args in [&["release", "--all", "--dry-run"][..], &["release", "--all"][..]] {
+        repo.vers()
+            .args(args)
+            .assert()
+            .code(1)
+            .stdout("")
+            .stderr("error: `a` and `b` would both change Cargo.toml in different ways; release them one at a time\n");
+    }
+    assert_eq!(repo.git(&["status", "--porcelain"]), "");
+}
+
+#[test]
+fn packages_changing_a_shared_file_the_same_way_share_the_write() {
+    let repo = workspace();
+    repo.write("crates/a/changes/x.fixed.md", "Fix.\n");
+    repo.write("crates/b/changes/y.added.md", "Add.\n");
+    repo.commit("Fragments", Some("2026-02-01T00:00:00Z"));
+
+    let out = repo.vers().args(["release", "--all", "--bump", "minor", "--dry-run"]).output().unwrap();
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert_eq!(stdout(&out).matches("--- a/Cargo.toml\n").count(), 1, "{}", stdout(&out));
+
+    let out = repo.vers().args(["release", "--all", "--bump", "minor", "--tag"]).output().unwrap();
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert_eq!(repo.read("Cargo.toml"), "[workspace.package]\nversion = \"1.1.0\"\n");
+    assert_eq!(repo.git(&["status", "--porcelain"]), "");
+    let files = repo.git(&["show", "--name-only", "--format=", "HEAD"]);
+    assert_eq!(files.lines().filter(|l| *l == "Cargo.toml").count(), 1, "{files}");
+    let mut tags: Vec<String> = repo.git(&["tag", "--list"]).lines().map(String::from).collect();
+    tags.sort();
+    assert_eq!(tags, ["a@v1.1.0", "b@v1.1.0"]);
+}
+
+#[test]
+fn packages_creating_the_same_tag_abort_before_writing() {
+    let repo = monorepo();
+    repo.write("vers.toml", "[version]\ntag = true\n");
+    repo.write("packages/web/package.json", "{ \"name\": \"web\", \"version\": \"1.4.0\" }\n");
+    repo.write("packages/api/changes/a.fixed.md", "Fix.\n");
+    repo.write("packages/web/changes/b.fixed.md", "Fix.\n");
+    repo.commit("Fragments", Some("2026-02-01T00:00:00Z"));
+    let head = repo.git(&["rev-parse", "HEAD"]);
+    repo.vers().args(["release", "--all"]).assert().code(1).stdout("").stderr(
+        "error: `api` and `web` would both be tagged `v1.4.1`; add `{name}` to `[version] tag_format`, e.g. \"{name}@v{version}\"\n",
+    );
+    assert_eq!(repo.git(&["status", "--porcelain"]), "");
+    assert_eq!(repo.git(&["rev-parse", "HEAD"]), head);
+    assert_eq!(repo.git(&["tag", "--list"]), "");
+}
