@@ -465,11 +465,40 @@ tag_format = "{name}@v{version}"
 }
 
 #[test]
-fn package_table_is_inherited_but_name_defaults_to_the_extending_dir() {
+fn package_table_is_not_inherited() {
     let t = Tmp::new();
-    t.write("shared/vers.toml", "[package]\n");
-    let c = t.load("web/vers.toml", "extend = \"../shared/vers.toml\"\n").unwrap();
-    assert_eq!(c.name(), "web");
+    t.write("vers.toml", "[package]\nname = \"app\"\n[version]\ntag = true\n");
+    // A shared config extending a package stays a shared config...
+    let shared = t.load("tools/vers.toml", "extend = \"../vers.toml\"\n").unwrap();
+    assert!(!shared.is_package());
+    assert!(shared.version.tag);
+    // ...and a package extending one doesn't inherit its explicit name.
+    let plugin = t.load("plugin/vers.toml", "extend = \"../vers.toml\"\n[package]\n").unwrap();
+    assert_eq!(plugin.name(), "plugin");
+    let found = discover_packages(&t.path("")).unwrap();
+    assert_eq!(names(&found), vec!["app", "plugin"]);
+}
+
+#[test]
+fn empty_changelog_path_or_fragment_directory_is_an_error() {
+    let t = Tmp::new();
+    let (path, m) = config_err(t.load("vers.toml", "[package]\n[changelog]\npath = \"\"\n"));
+    assert_eq!(path, t.path("vers.toml"));
+    assert!(m.contains("`changelog.path` is empty"), "{m}");
+    let (_, m) = config_err(t.load("vers.toml", "[package]\n[fragments]\ndirectory = \" \"\n"));
+    assert!(m.contains("`fragments.directory` is empty"), "{m}");
+}
+
+#[test]
+fn ignore_globs_may_start_with_dot_slash() {
+    let t = Tmp::new();
+    t.write("vers.toml", "[check]\nignore = [\"./packages/api/docs/**\"]\n");
+    let c = t.load("packages/api/vers.toml", "extend = \"../../vers.toml\"\n[package]\n").unwrap();
+    assert_eq!(c.check.ignore, vec!["docs/**"]);
+    let c = t.load("vers.toml", "[package]\n[check]\nignore = [\"./docs/**\", \".//x/*\"]\n").unwrap();
+    assert_eq!(c.check.ignore, vec!["docs/**", "x/*"]);
+    let (_, m) = config_err(t.load("vers.toml", "[package]\n[check]\nignore = [\"./\"]\n"));
+    assert!(m.contains("empty glob \"./\""), "{m}");
 }
 
 #[test]

@@ -198,7 +198,14 @@ fn read_chain(path: &Path) -> Result<Vec<Layer>> {
         seen.push(key);
         chain.push(current.clone());
 
-        let (dir, table, extend) = read_layer(&current)?;
+        let (dir, mut table, extend) = read_layer(&current)?;
+        if !layers.is_empty() {
+            // Being a package is a property of the file itself, not a setting:
+            // inheriting `[package]` would turn a shared config that extends a
+            // package into a package, and copy an explicit `name` into a
+            // second package.
+            table.remove("package");
+        }
         layers.push(Layer { dir: dir.clone(), table });
         let Some(extend) = extend else { break };
         if extend.trim().is_empty() {
@@ -344,6 +351,12 @@ fn validate_layer(raw: &RawConfig) -> std::result::Result<(), String> {
     if let Some(name) = raw.package.as_ref().and_then(|p| p.name.as_deref()) {
         validate_package_name(name)?;
     }
+    if raw.changelog.as_ref().and_then(|c| c.path.as_deref()).is_some_and(|p| p.trim().is_empty()) {
+        return Err("`changelog.path` is empty; set it to the changelog file, such as \"CHANGELOG.md\"".to_string());
+    }
+    if raw.fragments.as_ref().and_then(|f| f.directory.as_deref()).is_some_and(|d| d.trim().is_empty()) {
+        return Err("`fragments.directory` is empty; set it to the fragment directory, such as \"changes\"".to_string());
+    }
     if let Some(types) = &raw.types {
         build_types(types)?;
     }
@@ -457,7 +470,14 @@ fn resolve(path: &Path, raw: RawConfig, ignore_origin: Option<PathBuf>) -> Resul
     let ignore_origin = ignore_origin.unwrap_or_else(|| dir.clone());
     let check_settings = CheckSettings {
         require_fragment: check.require_fragment.unwrap_or(true),
-        ignore: check.ignore.unwrap_or_default().iter().map(|g| rebase_glob(g, &ignore_origin, &dir)).collect(),
+        ignore: check
+            .ignore
+            .unwrap_or_default()
+            .iter()
+            // `./docs/**` means the same as `docs/**`; the leading `./` would
+            // stop the glob from matching any relative path.
+            .map(|g| rebase_glob(strip_dot_slash(g), &ignore_origin, &dir))
+            .collect(),
     };
 
     Ok(Config {
@@ -644,8 +664,8 @@ fn build_locator(file: &RawVersionFile) -> std::result::Result<VersionLocator, S
 }
 
 fn validate_glob(glob: &str) -> std::result::Result<(), String> {
-    if glob.trim().is_empty() {
-        return Err("`check.ignore` contains an empty glob".to_string());
+    if strip_dot_slash(glob).trim().is_empty() {
+        return Err(format!("`check.ignore` contains an empty glob \"{glob}\""));
     }
     globset::Glob::new(glob).map(drop).map_err(|e| format!("invalid glob \"{glob}\" in `check.ignore`: {e}"))
 }
@@ -722,6 +742,14 @@ pub(super) fn rebase_glob(glob: &str, from: &Path, to: &Path) -> String {
     }
     let prefix = relative_path(to, from);
     if prefix.is_empty() { glob.to_string() } else { format!("{prefix}/{glob}") }
+}
+
+fn strip_dot_slash(glob: &str) -> &str {
+    let mut glob = glob;
+    while let Some(rest) = glob.strip_prefix("./") {
+        glob = rest.trim_start_matches('/');
+    }
+    glob
 }
 
 fn component_matches(glob_part: &str, name: &str) -> bool {
