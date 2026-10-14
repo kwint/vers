@@ -82,6 +82,12 @@ fn render_ref(r: &Ref) -> String {
     }
 }
 
+/// A code fence line (opening or closing), allowing for list indentation.
+fn is_fence(line: &str) -> bool {
+    let trimmed = line.trim_start();
+    trimmed.starts_with("```") || trimmed.starts_with("~~~")
+}
+
 fn render_refs(refs: &[Ref]) -> String {
     refs.iter().map(render_ref).collect::<Vec<_>>().join(", ")
 }
@@ -94,16 +100,36 @@ fn render_item(body: &str, refs: &[Ref], breaking: bool, config: &Config) -> Str
     if !refs.is_empty() {
         match config.changelog.ref_position {
             crate::config::RefPosition::End => {
-                let last = lines.last_mut().expect("split yields at least one line");
-                if last.is_empty() {
-                    *last = format!("({refs})");
-                } else {
-                    last.push_str(&format!(" ({refs})"));
+                // The last paragraph line: trailing link reference definitions
+                // (`[docs]: https://…`) are skipped, because text appended to
+                // them would become part of the URL's title.
+                let target = lines.iter().rposition(|l| !l.trim().is_empty() && link_label(l).is_none());
+                match target {
+                    // Text after a closing code fence would turn it into an
+                    // opening fence and swallow the rest of the changelog,
+                    // so the refs get their own paragraph after the code.
+                    Some(i) if is_fence(&lines[i]) => {
+                        lines.splice(i + 1..i + 1, [String::new(), format!("({refs})")]);
+                    }
+                    Some(i) => lines[i].push_str(&format!(" ({refs})")),
+                    None => {
+                        let last = lines.last_mut().expect("split yields at least one line");
+                        if last.is_empty() {
+                            *last = format!("({refs})");
+                        } else {
+                            lines.extend([String::new(), format!("({refs})")]);
+                        }
+                    }
                 }
             }
             crate::config::RefPosition::Start => {
-                let first = &mut lines[0];
-                *first = if first.is_empty() { refs } else { format!("{refs} {first}") };
+                if is_fence(&lines[0]) {
+                    // `- [#1](…) ```rust` would no longer open a code block.
+                    lines.splice(0..0, [refs, String::new()]);
+                } else {
+                    let first = &mut lines[0];
+                    *first = if first.is_empty() { refs } else { format!("{refs} {first}") };
+                }
             }
         }
     }
@@ -218,8 +244,13 @@ static RELEASE_HEADING: LazyLock<Regex> = LazyLock::new(|| {
 });
 static UNRELEASED_HEADING: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?i)^##[ \t]+\[unreleased\][ \t]*$").expect("valid regex"));
+// Only unindented definitions count: indented ones belong to a list item (e.g.
+// a reference definition at the end of a multi-line entry), not to the
+// changelog's link block.
 static LINK_REF: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"^ {0,3}\[(?<label>[^\]]+)\]:[ \t]*\S").expect("valid regex"));
+    LazyLock::new(|| Regex::new(r"^\[(?<label>[^\]]+)\]:[ \t]*\S").expect("valid regex"));
+
+const BOM: &str = "\u{feff}";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Eol {
@@ -302,7 +333,7 @@ impl Scan {
         let mut headings = Vec::new();
         let mut fence: Option<char> = None;
         for (i, line) in lines[..limit].iter().enumerate() {
-            let content = if i == 0 { line.content.trim_start_matches('\u{feff}') } else { &line.content };
+            let content = line.content.as_str();
             let trimmed = content.trim_start_matches(' ');
             if content.len() - trimmed.len() <= 3 {
                 if let Some(c) = fence {
@@ -410,8 +441,19 @@ fn parse_sections(lines: &[Line]) -> Vec<Section> {
 
     let mut sections: Vec<Section> = Vec::new();
     let mut entry: Option<Vec<String>> = None;
+    let mut in_fence = false;
     for line in lines {
         let content = line.content.as_str();
+        // Inside a code block, `- ` and `### ` lines are code, not structure.
+        if in_fence || is_fence(content) {
+            if is_fence(content) {
+                in_fence = !in_fence;
+            }
+            if !sections.is_empty() {
+                entry.get_or_insert_with(Vec::new).push(content.to_string());
+            }
+            continue;
+        }
         if is_heading(content, 3) {
             finish(&mut entry, sections.last_mut());
             sections.push(Section { heading: content[3..].trim().to_string(), entries: Vec::new() });
@@ -469,12 +511,15 @@ impl Changelog {
         Ok(Some(changelog))
     }
 
+    /// The lines of the text, without a UTF-8 byte order mark (which
+    /// [`Changelog::set_lines`] puts back at the very start).
     fn lines(&self) -> Vec<Line> {
-        split_lines(&self.text)
+        split_lines(self.text.strip_prefix(BOM).unwrap_or(&self.text))
     }
 
     fn set_lines(&mut self, lines: &[Line]) {
-        self.text = join_lines(lines);
+        let bom = if self.text.starts_with(BOM) { BOM } else { "" };
+        self.text = format!("{bom}{}", join_lines(lines));
     }
 
     /// The line ending used for new lines: the file's first line ending.
@@ -555,11 +600,13 @@ impl Changelog {
     /// into `release`.
     pub fn insert_release(&mut self, release: &Release, config: &Config) -> Result<()> {
         let version = &release.version;
-        if self.versions().contains(version) {
+        // Build metadata doesn't count: `1.0.0+build.2` is the same release as `1.0.0`.
+        if let Some(existing) = self.versions().into_iter().find(|v| v.cmp_precedence(version).is_eq()) {
             return Err(Error::changelog(
                 &self.path,
                 format!(
-                    "version {version} is already in the changelog; choose a newer version with --version or --bump"
+                    "version {version} is already in the changelog (as `## [{existing}]`); \
+                     choose a newer version with --version or --bump"
                 ),
             ));
         }

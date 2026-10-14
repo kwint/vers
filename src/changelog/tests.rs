@@ -982,3 +982,87 @@ fn tag_name_format() {
     assert_eq!(tag_name("v{version}", "api", &v("1.2.3")), "v1.2.3");
     assert_eq!(tag_name("{name}@v{version}", "api", &v("1.2.3-rc.1")), "api@v1.2.3-rc.1");
 }
+
+// ---------------------------------------------------------------------------
+// Review fixes
+// ---------------------------------------------------------------------------
+
+#[test]
+fn bom_stays_at_start_when_unreleased_is_inserted_on_first_line() {
+    let mut c = Changelog::parse("\u{feff}## [1.0.0] - 2026-01-01\n\n- a\n").unwrap();
+    assert!(c.ensure_unreleased());
+    assert_eq!(c.as_str(), "\u{feff}## [Unreleased]\n\n## [1.0.0] - 2026-01-01\n\n- a\n");
+
+    let mut c = Changelog::parse("\u{feff}## [1.0.0] - 2026-01-01\r\n").unwrap();
+    c.insert_release(&release("1.1.0", "2026-02-01", vec![section("Added", &["- b"])]), &github()).unwrap();
+    let out = c.as_str();
+    assert!(out.starts_with("\u{feff}## [Unreleased]\r\n\r\n## [1.1.0] - 2026-02-01\r\n"), "{out:?}");
+    assert_eq!(out.matches('\u{feff}').count(), 1);
+}
+
+#[test]
+fn entry_refs_after_trailing_code_fence_get_their_own_paragraph() {
+    let f = with_refs(frag("1", "fixed", "Fix it:\n\n```toml\nkey = 1\n```"), vec![issue(1)]);
+    assert_eq!(
+        render_entry(&f, &config()),
+        "- Fix it:\n\n  ```toml\n  key = 1\n  ```\n\n  ([#1](https://github.com/example/greeter/issues/1))"
+    );
+    let f = with_refs(frag("1", "fixed", "Fix it:\n\n~~~\nx\n~~~"), vec![plain("PROJ-1")]);
+    assert_eq!(render_entry(&f, &config()), "- Fix it:\n\n  ~~~\n  x\n  ~~~\n\n  (PROJ-1)");
+}
+
+#[test]
+fn entry_refs_skip_trailing_link_definitions() {
+    let f = with_refs(frag("1", "fixed", "See [the docs].\n\n[the docs]: https://docs.example"), vec![issue(1)]);
+    assert_eq!(
+        render_entry(&f, &config()),
+        "- See [the docs]. ([#1](https://github.com/example/greeter/issues/1))\n\n  [the docs]: https://docs.example"
+    );
+}
+
+#[test]
+fn entry_start_refs_before_leading_code_fence() {
+    let mut cfg = config();
+    cfg.changelog.ref_position = RefPosition::Start;
+    let f = breaking(with_refs(frag("1", "changed", "```\nx\n```\nText."), vec![plain("PROJ-1")]));
+    assert_eq!(render_entry(&f, &cfg), "- **Breaking:** PROJ-1\n\n  ```\n  x\n  ```\n  Text.");
+}
+
+#[test]
+fn indented_link_definition_in_entry_is_not_the_link_block() {
+    let mut c = Changelog::parse("# Changelog\n\n## [Unreleased]\n").unwrap();
+    let r = build_release(
+        v("1.0.0"),
+        "2026-01-01".into(),
+        &[frag("docs", "fixed", "See [docs].\n\n[docs]: https://d")],
+        &default_types(),
+        &config(),
+    );
+    c.insert_release(&r, &config()).unwrap();
+    c.insert_release(&release("1.1.0", "2026-01-02", vec![section("Fixed", &["- Other."])]), &github()).unwrap();
+    assert_eq!(
+        c.as_str(),
+        "# Changelog\n\n## [Unreleased]\n\n## [1.1.0] - 2026-01-02\n\n### Fixed\n\n- Other.\n\n\
+         ## [1.0.0] - 2026-01-01\n\n### Fixed\n\n- See [docs].\n\n  [docs]: https://d\n\n\
+         [Unreleased]: https://github.com/example/greeter/compare/v1.1.0...HEAD\n\
+         [1.1.0]: https://github.com/example/greeter/compare/v1.0.0...v1.1.0\n"
+    );
+}
+
+#[test]
+fn prerelease_sections_code_fences_are_not_structure() {
+    let text = "## [1.0.0-rc.1] - 2026-01-01\n\n### Added\n\n- Example:\n\n  ```md\n### Not a heading\n- not an entry\n  ```\n- Next.\n";
+    let c = Changelog::parse(text).unwrap();
+    assert_eq!(
+        c.prerelease_sections(&v("1.0.0")),
+        vec![section("Added", &["- Example:\n\n  ```md\n### Not a heading\n- not an entry\n  ```", "- Next."])]
+    );
+}
+
+#[test]
+fn insert_version_differing_only_in_build_metadata_is_error() {
+    let mut c = Changelog::parse(FIXTURE).unwrap();
+    let err = c.insert_release(&release("1.2.0+build.5", "2026-10-14", vec![]), &github()).unwrap_err();
+    assert!(err.to_string().contains("version 1.2.0+build.5 is already in the changelog (as `## [1.2.0]`)"), "{err}");
+    assert_eq!(c.as_str(), FIXTURE);
+}
