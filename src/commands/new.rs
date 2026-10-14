@@ -88,7 +88,7 @@ pub fn run(ctx: &Context, args: &NewArgs) -> Result<()> {
         }
     };
 
-    let shown = ctx.display_path(&path);
+    let shown = super::init::show_path(ctx, &path);
     if ctx.json_output() {
         ctx.json(&JsonOutput {
             path: shown,
@@ -106,14 +106,24 @@ pub fn run(ctx: &Context, args: &NewArgs) -> Result<()> {
 /// Create the fragment file, adding a counter if the name is taken (also if
 /// another process creates it at the same moment).
 fn write_fragment(config: &Config, name: &str, type_name: &str, content: &str) -> Result<PathBuf> {
+    let mut previous: Option<PathBuf> = None;
     loop {
         let path = fragment::new_fragment_path(config, name, type_name);
         match std::fs::OpenOptions::new().write(true).create_new(true).open(&path) {
             Ok(mut file) => {
-                file.write_all(content.as_bytes()).map_err(|e| Error::io(&path, e))?;
+                if let Err(e) = file.write_all(content.as_bytes()) {
+                    drop(file);
+                    let _ = std::fs::remove_file(&path);
+                    return Err(Error::io(&path, e));
+                }
                 return Ok(path);
             }
-            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            // Taken since `new_fragment_path` looked: try the next counter. If
+            // the same path comes back, something `exists()` can't see (such
+            // as a dangling symlink) is in the way.
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists && previous.as_ref() != Some(&path) => {
+                previous = Some(path);
+            }
             Err(e) => return Err(Error::io(&path, e)),
         }
     }
@@ -203,8 +213,7 @@ fn read_message() -> Result<String> {
 
 /// Open `editor` on a temporary file and return what was written to it.
 fn edit_message(editor: &str) -> Result<String> {
-    let path = temp_file_path();
-    std::fs::write(&path, "").map_err(|e| Error::io(&path, e))?;
+    let path = create_temp_file()?;
     let result = run_editor(editor, &path);
     let text = result.and_then(|()| crate::error::read_to_string(&path));
     let _ = std::fs::remove_file(&path);
@@ -216,16 +225,42 @@ fn run_editor(editor: &str, path: &Path) -> Result<()> {
     if words.is_empty() {
         return Err(Error::Usage("the editor command is empty; check $VISUAL and $EDITOR".to_string()));
     }
-    let program = words.remove(0);
+    let program = resolve_program(&words.remove(0));
     let status = Command::new(&program)
         .args(&words)
         .arg(path)
         .status()
         .map_err(|e| Error::Failed(format!("can't start the editor `{editor}`: {e}")))?;
     if !status.success() {
-        return Err(Error::Failed(format!("the editor `{editor}` exited with {status}; no fragment created")));
+        let how = match status.code() {
+            Some(code) => format!("exited with code {code}"),
+            None => "was terminated".to_string(),
+        };
+        return Err(Error::Failed(format!("the editor `{editor}` {how}; no fragment created")));
     }
     Ok(())
+}
+
+/// The program to run for `name`. On Windows, `Command` only finds `.exe`
+/// files on `PATH`, but editors are often `.cmd` shims (`code`), so a bare
+/// name is looked up with each `PATHEXT` extension.
+fn resolve_program(name: &str) -> PathBuf {
+    if cfg!(windows) && Path::new(name).extension().is_none() && !name.contains(['/', '\\']) {
+        let exts = std::env::var("PATHEXT").unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".to_string());
+        if let Some(path) = std::env::var_os("PATH").and_then(|p| find_in_path(name, &p, &exts)) {
+            return path;
+        }
+    }
+    PathBuf::from(name)
+}
+
+fn find_in_path(name: &str, path_var: &std::ffi::OsStr, exts: &str) -> Option<PathBuf> {
+    std::env::split_paths(path_var).find_map(|dir| {
+        exts.split(';')
+            .filter(|ext| !ext.is_empty())
+            .map(|ext| dir.join(format!("{name}{}", ext.to_ascii_lowercase())))
+            .find(|candidate| candidate.is_file())
+    })
 }
 
 /// Split an editor command into words, honouring simple single and double quotes.
@@ -260,14 +295,36 @@ fn split_command(command: &str) -> Vec<String> {
     words
 }
 
-fn temp_file_path() -> PathBuf {
+/// Create a new, empty temporary file for the editor. `create_new` makes sure
+/// an existing file (or a symlink planted in a shared temp directory) is never
+/// reused.
+fn create_temp_file() -> Result<PathBuf> {
+    let dir = std::env::temp_dir();
     let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.subsec_nanos());
-    std::env::temp_dir().join(format!("vers-fragment-{}-{nanos}.md", std::process::id()))
+    for attempt in 0u32.. {
+        let path = dir.join(format!("vers-fragment-{}-{nanos}-{attempt}.md", std::process::id()));
+        match std::fs::OpenOptions::new().write(true).create_new(true).open(&path) {
+            Ok(_) => return Ok(path),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists && attempt < 100 => {}
+            Err(e) => return Err(Error::io(&path, e)),
+        }
+    }
+    unreachable!("the loop returns")
 }
 
 #[cfg(test)]
 mod tests {
-    use super::split_command;
+    use super::{find_in_path, split_command};
+
+    #[test]
+    fn program_lookup_with_extensions() {
+        let a = tempfile::tempdir().unwrap();
+        let b = tempfile::tempdir().unwrap();
+        std::fs::write(b.path().join("code.cmd"), "").unwrap();
+        let path = std::env::join_paths([a.path(), b.path()]).unwrap();
+        assert_eq!(find_in_path("code", &path, ".EXE;.CMD"), Some(b.path().join("code.cmd")));
+        assert_eq!(find_in_path("vim", &path, ".EXE;.CMD"), None);
+    }
 
     #[test]
     fn editor_commands() {

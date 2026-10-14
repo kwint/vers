@@ -278,8 +278,11 @@ fn init_detects_files_by_pattern() {
     );
     let config = repo.read("vers.toml");
     assert!(config.contains("path = \"mix.exs\"\npattern = '\\bversion:\\s*\"(?<version>[^\"]+)\"'\n"), "{config}");
-    // A pattern containing a single quote is written as a basic string.
-    assert!(config.contains("path = \"x.gemspec\"\npattern = \""), "{config}");
+    // A pattern containing a single quote is written as a '''literal''' string.
+    assert!(
+        config.contains("path = \"x.gemspec\"\npattern = '''\\.version\\s*=\\s*[\"'](?<version>[^\"']+)[\"']'''\n"),
+        "{config}"
+    );
     repo.vers().args(["new", "fixed", "-m", "Fix."]).assert().success();
 }
 
@@ -563,4 +566,87 @@ fn new_quiet() {
     package(&repo);
     repo.vers().args(["-q", "new", "added", "-m", "X."]).assert().success().stdout("");
     assert!(repo.exists("changes/x.added.md"));
+}
+
+// ---------------------------------------------------------------------------
+// Review fixes
+
+#[test]
+fn init_uses_the_fragments_directory_and_changelog_from_the_extended_config() {
+    let repo = TestRepo::without_git();
+    // Relative paths resolve against the file that contains them, so the
+    // shared config's settings put both files at the root.
+    repo.write("vers.toml", "[changelog]\npath = \"docs/CHANGES.md\"\n\n[fragments]\ndirectory = \"notes\"\n");
+    repo.write("packages/api/VERSION", "1.0.0\n");
+    repo.vers_in("packages/api").arg("init").assert().success().stderr("").stdout(
+        "Created vers.toml (extends ../../vers.toml)\n\
+         Created ../../notes/.gitkeep\n\
+         Created ../../docs/CHANGES.md\n\
+         Detected version file: VERSION (1.0.0)\n",
+    );
+    assert!(repo.exists("notes/.gitkeep"));
+    new_changelog_ok(&repo.read("docs/CHANGES.md"));
+    assert!(!repo.exists("packages/api/changes"));
+    assert!(!repo.exists("packages/api/CHANGELOG.md"));
+}
+
+#[test]
+fn init_with_an_invalid_parent_config_writes_nothing() {
+    let repo = TestRepo::without_git();
+    repo.write("vers.toml", "[changelog]\nrepo = \"bitbucket\"\n");
+    repo.write("pkg/.keep", "");
+    repo.vers_in("pkg").arg("init").assert().code(2).stdout("");
+    assert!(!repo.exists("pkg/vers.toml"));
+    assert!(!repo.exists("pkg/changes"));
+    assert!(!repo.exists("pkg/CHANGELOG.md"));
+}
+
+#[test]
+fn init_with_an_unreadable_changelog_writes_nothing() {
+    let repo = TestRepo::without_git();
+    std::fs::write(repo.path("CHANGELOG.md"), b"# Changelog\n\xff\xfe\n").unwrap();
+    repo.vers().arg("init").assert().failure().stdout("");
+    assert!(!repo.exists("vers.toml"));
+    assert!(!repo.exists("changes"));
+}
+
+#[test]
+fn new_from_a_subdirectory_shows_a_relative_path() {
+    let repo = TestRepo::new();
+    package(&repo);
+    repo.write("src/deep/main.rs", "");
+    repo.vers_in("src/deep")
+        .args(["new", "fixed", "-m", "Deep fix."])
+        .assert()
+        .success()
+        .stdout("Created ../../changes/deep-fix.fixed.md\n");
+    assert!(repo.exists("changes/deep-fix.fixed.md"));
+    let out = repo.vers_in("src/deep").args(["--format", "json", "new", "fixed", "-m", "Deep fix."]).assert().success();
+    let json: serde_json::Value = serde_json::from_str(&stdout(&out)).unwrap();
+    assert_eq!(json["path"], "../../changes/deep-fix.fixed.2.md");
+}
+
+#[cfg(unix)]
+#[test]
+fn new_does_not_loop_on_a_dangling_symlink() {
+    let repo = TestRepo::new();
+    package(&repo);
+    std::fs::create_dir_all(repo.path("changes")).unwrap();
+    std::os::unix::fs::symlink(repo.path("nowhere"), repo.path("changes/7.fixed.md")).unwrap();
+    repo.vers().args(["new", "fixed", "7", "-m", "Fix."]).timeout(std::time::Duration::from_secs(20)).assert().code(1);
+}
+
+#[test]
+fn new_reports_a_failing_editor() {
+    let repo = TestRepo::new();
+    package(&repo);
+    let editor = if cfg!(windows) { "cmd /c exit 3" } else { "sh -c 'exit 3'" };
+    repo.vers()
+        .args(["new", "added"])
+        .env("EDITOR", editor)
+        .assert()
+        .code(1)
+        .stdout("")
+        .stderr(format!("error: the editor `{editor}` exited with code 3; no fragment created\n"));
+    assert!(!repo.exists("changes"));
 }

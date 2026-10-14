@@ -73,6 +73,22 @@ pub fn run(ctx: &Context, args: &InitArgs) -> Result<()> {
     let config_path = dir.join("vers.toml");
     write_new(&config_path, &text)?;
 
+    // Load the new config (which validates it and everything it extends) and
+    // the existing changelog before anything else is written, so a failure
+    // leaves nothing behind. The fragments directory and changelog path come
+    // from the config, since an extended config may set them.
+    let loaded = config::load(&config_path).and_then(|config| {
+        let changelog = if args.shared { None } else { Changelog::load(&config.changelog.path)? };
+        Ok((config, changelog))
+    });
+    let (config, existing_changelog) = match loaded {
+        Ok(loaded) => loaded,
+        Err(e) => {
+            let _ = std::fs::remove_file(&config_path);
+            return Err(e);
+        }
+    };
+
     let mut created = vec![ctx.display_path(&config_path)];
     let mut updated = Vec::new();
     let suffix = match (args.shared, &extends) {
@@ -84,28 +100,31 @@ pub fn run(ctx: &Context, args: &InitArgs) -> Result<()> {
     ctx.line(format!("Created {}{suffix}", ctx.display_path(&config_path)));
 
     if !args.shared {
-        let changes = dir.join("changes");
-        if dir_is_missing_or_empty(&changes) {
-            std::fs::create_dir_all(&changes).map_err(|e| Error::io(&changes, e))?;
+        let changes = &config.fragments.directory;
+        if dir_is_missing_or_empty(changes) {
+            std::fs::create_dir_all(changes).map_err(|e| Error::io(changes, e))?;
             let gitkeep = changes.join(".gitkeep");
             write_new(&gitkeep, "")?;
-            let shown = ctx.display_path(&gitkeep);
+            let shown = show_path(ctx, &gitkeep);
             ctx.line(format!("Created {shown}"));
             created.push(shown);
         }
 
-        let changelog_path = dir.join("CHANGELOG.md");
-        match Changelog::load(&changelog_path)? {
+        let changelog_path = &config.changelog.path;
+        match existing_changelog {
             None => {
-                write_new(&changelog_path, NEW_CHANGELOG)?;
-                let shown = ctx.display_path(&changelog_path);
+                if let Some(parent) = changelog_path.parent() {
+                    std::fs::create_dir_all(parent).map_err(|e| Error::io(parent, e))?;
+                }
+                write_new(changelog_path, NEW_CHANGELOG)?;
+                let shown = show_path(ctx, changelog_path);
                 ctx.line(format!("Created {shown}"));
                 created.push(shown);
             }
             Some(mut changelog) => {
                 if changelog.ensure_unreleased() {
-                    std::fs::write(&changelog_path, changelog.as_str()).map_err(|e| Error::io(&changelog_path, e))?;
-                    let shown = ctx.display_path(&changelog_path);
+                    std::fs::write(changelog_path, changelog.as_str()).map_err(|e| Error::io(changelog_path, e))?;
+                    let shown = show_path(ctx, changelog_path);
                     ctx.line(format!("Updated {shown} (added ## [Unreleased])"));
                     updated.push(shown);
                 }
@@ -244,10 +263,18 @@ fn basic_string(s: &str) -> String {
     serde_json::to_string(s).expect("strings serialise")
 }
 
-/// A TOML literal string if possible (no escaping, nicer for regexes),
-/// otherwise a basic string.
+/// A TOML literal string if possible (no escaping, nicer for regexes): `'…'`,
+/// or `'''…'''` when the text contains a single quote; otherwise a basic string.
 fn literal_string(s: &str) -> String {
-    if s.contains('\'') || s.chars().any(|c| c.is_control()) { basic_string(s) } else { format!("'{s}'") }
+    if s.chars().any(|c| c.is_control()) {
+        basic_string(s)
+    } else if !s.contains('\'') {
+        format!("'{s}'")
+    } else if !s.contains("'''") && !s.starts_with('\'') && !s.ends_with('\'') {
+        format!("'''{s}'''")
+    } else {
+        basic_string(s)
+    }
 }
 
 fn write_new(path: &Path, content: &str) -> Result<()> {
@@ -262,6 +289,12 @@ fn dir_is_missing_or_empty(dir: &Path) -> bool {
         Ok(mut entries) => entries.next().is_none(),
         Err(_) => !dir.exists(),
     }
+}
+
+/// `path` for display: relative to the current directory (with `..` when it's
+/// outside it), with forward slashes.
+pub(crate) fn show_path(ctx: &Context, path: &Path) -> String {
+    if path.starts_with(&ctx.cwd) { ctx.display_path(path) } else { relative_path(&ctx.cwd, path) }
 }
 
 /// `target` (a file) relative to directory `from`, with forward slashes.
@@ -299,6 +332,13 @@ mod tests {
     fn strings() {
         assert_eq!(basic_string("a\"b\\c"), r#""a\"b\\c""#);
         assert_eq!(literal_string(r"^v = (?<version>\S+)"), r"'^v = (?<version>\S+)'");
-        assert_eq!(literal_string("a'b"), "\"a'b\"");
+        assert_eq!(literal_string("a'b"), "'''a'b'''");
+        assert_eq!(literal_string("a'''b"), "\"a'''b\"");
+        assert_eq!(literal_string("'a"), "\"'a\"");
+        // Every form reads back as the same string.
+        for s in [r#"["'](?<version>[^"']+)["']"#, "a'b", "a'''b", "'a", "b'", "x\ty", "a\"b", r"\d+"] {
+            let doc: toml::Table = toml::from_str(&format!("p = {}", literal_string(s))).unwrap();
+            assert_eq!(doc["p"].as_str(), Some(s), "{s}");
+        }
     }
 }
