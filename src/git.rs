@@ -34,7 +34,7 @@ impl Git {
             Ok(out) if out.status.success() => {
                 let root = String::from_utf8_lossy(&out.stdout).trim().to_string();
                 let root = PathBuf::from(root);
-                let root = root.canonicalize().unwrap_or(root);
+                let root = root.canonicalize().map(simplify_verbatim).unwrap_or(root);
                 Ok(Some(Git { root, env: Vec::new() }))
             }
             _ => Ok(None),
@@ -112,11 +112,28 @@ impl Git {
     /// `git log --diff-filter=A` call. Files never committed are absent.
     ///
     /// Relative `dirs` are relative to the working tree root. Directories that
-    /// don't exist are fine, and a repository without commits gives an empty
-    /// map.
+    /// don't exist or lie outside the working tree are fine, and a repository
+    /// without commits gives an empty map.
+    ///
+    /// Each key is the directory it was found under, as passed in, joined with
+    /// the rest of the path. A caller that lists a directory and looks its
+    /// files up here gets matching paths even when the directory was reached
+    /// through a symlink (macOS `/var`) or written in another form (Windows
+    /// `\\?\` or 8.3 short names).
     pub fn added_times(&self, dirs: &[PathBuf]) -> Result<HashMap<PathBuf, i64>> {
         let mut times = HashMap::new();
-        if dirs.is_empty() {
+        // (root-relative pathspec, the directory as the caller wrote it)
+        let bases: Vec<(OsString, PathBuf)> = dirs
+            .iter()
+            .filter_map(|dir| {
+                let rel = self.relative(dir)?;
+                if rel.components().next() == Some(Component::ParentDir) {
+                    return None;
+                }
+                Some((slash_path(&rel), self.resolve(dir)))
+            })
+            .collect();
+        if bases.is_empty() {
             return Ok(times);
         }
         let mut args = git_args(&[
@@ -136,7 +153,7 @@ impl Git {
             "--format=%x01%at",
             "--",
         ]);
-        args.extend(dirs.iter().map(|d| self.pathspec(d)));
+        args.extend(bases.iter().map(|(spec, _)| spec.clone()));
         let out = self.output(&args)?;
         if !out.status.success() {
             if !self.has_commits()? {
@@ -172,9 +189,30 @@ impl Git {
                     String::from_utf8_lossy(token)
                 )));
             };
-            times.insert(self.absolute(token), time);
+            times.insert(self.key_under(token, &bases), time);
         }
         Ok(times)
+    }
+
+    /// The absolute path for `git_path`, built on the longest of `bases` that
+    /// contains it (see [`Git::added_times`]), or on the root.
+    fn key_under(&self, git_path: &[u8], bases: &[(OsString, PathBuf)]) -> PathBuf {
+        let best = bases
+            .iter()
+            .filter_map(|(spec, given)| {
+                let spec = os_to_bytes(spec);
+                let rest = if spec == b"." {
+                    Some(git_path)
+                } else {
+                    git_path.strip_prefix(spec.as_slice()).and_then(|rest| rest.strip_prefix(b"/"))
+                };
+                rest.map(|rest| (spec.len(), given, rest))
+            })
+            .max_by_key(|(len, _, _)| *len);
+        match best {
+            Some((_, given, rest)) => join_slash(given.clone(), rest),
+            None => self.absolute(git_path),
+        }
     }
 
     /// Files (absolute paths) changed between the merge base of `base` and
@@ -192,8 +230,16 @@ impl Git {
 
     fn diff_names(&self, base: &str, filter: Option<&str>) -> Result<Vec<PathBuf>> {
         self.verify_base(base)?;
-        let mut args =
-            git_args(&["-c", "core.quotepath=off", "diff", "--name-only", "--no-renames", "--no-ext-diff", "-z"]);
+        let mut args = git_args(&[
+            "-c",
+            "core.quotepath=off",
+            "diff",
+            "--name-only",
+            "--no-renames",
+            "--no-ext-diff",
+            "--no-color",
+            "-z",
+        ]);
         if let Some(filter) = filter {
             args.push(filter.into());
         }
@@ -239,8 +285,13 @@ impl Git {
         Err(Error::Git(message))
     }
 
-    /// Whether `path` is tracked (in the index).
+    /// Whether `path` is tracked (in the index). A path outside the working
+    /// tree is not.
     pub fn is_tracked(&self, path: &Path) -> Result<bool> {
+        match self.relative(path) {
+            Some(rel) if rel.components().next() != Some(Component::ParentDir) => {}
+            _ => return Ok(false),
+        }
         let mut args = git_args(&["--literal-pathspecs", "ls-files", "--error-unmatch", "--"]);
         args.push(self.pathspec(path));
         let out = self.output(&args)?;
@@ -319,7 +370,8 @@ impl Git {
 
     /// All tag names.
     pub fn tags(&self) -> Result<Vec<String>> {
-        let out = self.run(["tag", "--list"])?;
+        // `--no-column`: with `column.ui = always`, git puts several names on a line.
+        let out = self.run(["tag", "--list", "--no-column"])?;
         Ok(out.lines().map(str::trim).filter(|l| !l.is_empty()).map(String::from).collect())
     }
 
@@ -354,12 +406,12 @@ impl Git {
         if let Ok(rel) = path.strip_prefix(&self.root) {
             return Some(normalize(rel));
         }
-        if let Ok(canonical) = path.canonicalize()
+        if let Ok(canonical) = path.canonicalize().map(simplify_verbatim)
             && let Ok(rel) = canonical.strip_prefix(&self.root)
         {
             return Some(rel.to_path_buf());
         }
-        let parent = path.parent()?.canonicalize().ok()?;
+        let parent = simplify_verbatim(path.parent()?.canonicalize().ok()?);
         let rel = parent.strip_prefix(&self.root).ok()?;
         Some(normalize(&rel.join(path.file_name()?)))
     }
@@ -367,11 +419,40 @@ impl Git {
     /// A root-relative path as git prints it (`/`-separated) → an absolute path
     /// with native separators.
     fn absolute(&self, git_path: &[u8]) -> PathBuf {
-        let mut path = self.root.clone();
-        for part in git_path.split(|&b| b == b'/').filter(|p| !p.is_empty()) {
-            path.push(bytes_to_os(part));
-        }
-        path
+        join_slash(self.root.clone(), git_path)
+    }
+}
+
+/// `base` joined with a `/`-separated relative path, using native separators.
+fn join_slash(mut base: PathBuf, rel: &[u8]) -> PathBuf {
+    for part in rel.split(|&b| b == b'/').filter(|p| !p.is_empty()) {
+        base.push(bytes_to_os(part));
+    }
+    base
+}
+
+/// Drop the `\\?\` prefix that `canonicalize` adds on Windows when the path
+/// can be written without it, so the root compares equal to paths built from
+/// `current_dir()` and config files. Other platforms are unchanged.
+fn simplify_verbatim(path: PathBuf) -> PathBuf {
+    if cfg!(windows)
+        && let Some(simple) = path.to_str().and_then(strip_verbatim)
+    {
+        return PathBuf::from(simple);
+    }
+    path
+}
+
+/// `\\?\C:\x` → `C:\x` and `\\?\UNC\server\share` → `\\server\share`; `None`
+/// for anything else.
+fn strip_verbatim(path: &str) -> Option<String> {
+    if let Some(rest) = path.strip_prefix(r"\\?\UNC\") {
+        return Some(format!(r"\\{rest}"));
+    }
+    let rest = path.strip_prefix(r"\\?\")?;
+    match rest.as_bytes() {
+        [drive, b':'] | [drive, b':', b'\\', ..] if drive.is_ascii_alphabetic() => Some(rest.to_string()),
+        _ => None,
     }
 }
 
@@ -429,6 +510,17 @@ fn bytes_to_os(bytes: &[u8]) -> OsString {
 fn bytes_to_os(bytes: &[u8]) -> OsString {
     // git for Windows prints paths as UTF-8.
     OsString::from(String::from_utf8_lossy(bytes).into_owned())
+}
+
+#[cfg(unix)]
+fn os_to_bytes(os: &std::ffi::OsStr) -> Vec<u8> {
+    use std::os::unix::ffi::OsStrExt;
+    os.as_bytes().to_vec()
+}
+
+#[cfg(not(unix))]
+fn os_to_bytes(os: &std::ffi::OsStr) -> Vec<u8> {
+    os.to_string_lossy().into_owned().into_bytes()
 }
 
 /// Default base ref for `vers check` when `--base` isn't given:
@@ -521,5 +613,20 @@ mod tests {
         assert_eq!(slash_path(&Path::new("a").join("b").join("c.md")), OsString::from("a/b/c.md"));
         assert_eq!(normalize(Path::new("./a/../b/./c")), PathBuf::from("b").join("c"));
         assert_eq!(trim_leading_newlines(b"\n\r\nab\n"), b"ab\n");
+        assert_eq!(join_slash(PathBuf::from("base"), b"a//b/"), PathBuf::from("base").join("a").join("b"));
+    }
+
+    #[test]
+    fn verbatim_prefixes() {
+        assert_eq!(strip_verbatim(r"\\?\C:\repo\x").as_deref(), Some(r"C:\repo\x"));
+        assert_eq!(strip_verbatim(r"\\?\d:").as_deref(), Some("d:"));
+        assert_eq!(strip_verbatim(r"\\?\UNC\server\share\x").as_deref(), Some(r"\\server\share\x"));
+        assert_eq!(strip_verbatim(r"\\?\Volume{abc}\x"), None);
+        assert_eq!(strip_verbatim(r"C:\repo"), None);
+        assert_eq!(strip_verbatim("/home/x"), None);
+        // Only Windows rewrites paths.
+        let verbatim = PathBuf::from(r"\\?\C:\repo");
+        let expected = if cfg!(windows) { PathBuf::from(r"C:\repo") } else { verbatim.clone() };
+        assert_eq!(simplify_verbatim(verbatim), expected);
     }
 }

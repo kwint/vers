@@ -32,7 +32,15 @@ fn isolated_env(home: &Path) -> Vec<(OsString, Option<OsString>)> {
         set("GIT_AUTHOR_DATE", DEFAULT_DATE),
         set("GIT_COMMITTER_DATE", DEFAULT_DATE),
     ];
-    for var in ["GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY", "GIT_CEILING_DIRECTORIES"] {
+    for var in [
+        "GIT_DIR",
+        "GIT_WORK_TREE",
+        "GIT_INDEX_FILE",
+        "GIT_OBJECT_DIRECTORY",
+        "GIT_CEILING_DIRECTORIES",
+        "GIT_CONFIG_PARAMETERS",
+        "GIT_CONFIG_COUNT",
+    ] {
         env.push((OsString::from(var), None));
     }
     env
@@ -87,6 +95,18 @@ impl Repo {
 
     fn sh(&self, args: &[&str]) -> String {
         self.sh_at(args, None)
+    }
+
+    /// The same repository seen by a git whose user config sets `config`.
+    fn with_user_config(&self, config: &[(&str, &str)]) -> Git {
+        let mut git = self.git.clone();
+        let set = |k: String, v: &str| (OsString::from(k), Some(OsString::from(v)));
+        git.env.push(set("GIT_CONFIG_COUNT".into(), &config.len().to_string()));
+        for (i, (key, value)) in config.iter().enumerate() {
+            git.env.push(set(format!("GIT_CONFIG_KEY_{i}"), key));
+            git.env.push(set(format!("GIT_CONFIG_VALUE_{i}"), value));
+        }
+        git
     }
 
     /// Stage everything and commit at `date`.
@@ -290,6 +310,62 @@ fn added_times_for_the_whole_repo_and_no_dirs() {
 }
 
 #[test]
+fn added_times_keys_use_the_dirs_as_given() {
+    let repo = Repo::new();
+    repo.write("changes/a.md", "A.");
+    repo.write("changes/sub/b.md", "B.");
+    repo.write("other.md", "o");
+    repo.commit_all("one", "2026-01-01T00:00:00Z");
+    let t = ts("2026-01-01T00:00:00Z");
+
+    // Overlapping dirs: the longest one wins, and nothing is lost.
+    let sub = repo.path("changes").join(".").join("sub");
+    let times = repo.git.added_times(&[repo.root().to_path_buf(), sub.clone()]).unwrap();
+    assert_eq!(times.len(), 3);
+    assert_eq!(times[&sub.join("b.md")], t);
+    assert_eq!(times[&repo.path("changes/a.md")], t);
+
+    // A dir outside the working tree has no history here; it isn't an error.
+    assert!(repo.git.added_times(&[repo.dir.join("home")]).unwrap().is_empty());
+    let times = repo.git.added_times(&[repo.dir.join("home"), repo.path("changes")]).unwrap();
+    assert_eq!(times.len(), 2);
+}
+
+/// A caller that reaches the repository through a symlink (like macOS's
+/// `/var` → `/private/var`) gets keys it can look its own paths up with.
+#[cfg(unix)]
+#[test]
+fn added_times_keys_follow_a_symlinked_dir() {
+    let repo = Repo::new();
+    repo.write("changes/a.md", "A.");
+    repo.commit_all("one", "2026-01-01T00:00:00Z");
+    let link = repo.dir.join("link");
+    std::os::unix::fs::symlink(repo.root(), &link).unwrap();
+
+    let dir = link.join("changes");
+    let times = repo.git.added_times(std::slice::from_ref(&dir)).unwrap();
+    let listed = std::fs::read_dir(&dir).unwrap().next().unwrap().unwrap().path();
+    assert_eq!(times.get(&listed), Some(&ts("2026-01-01T00:00:00Z")), "{times:?}");
+}
+
+#[test]
+fn added_times_ignore_user_output_config() {
+    let repo = Repo::new();
+    repo.write("changes/a.md", "A.");
+    repo.commit_all("one", "2026-01-01T00:00:00Z");
+    let git = repo.with_user_config(&[
+        ("color.ui", "always"),
+        ("color.diff", "always"),
+        ("log.showSignature", "true"),
+        ("log.decorate", "full"),
+        ("diff.relative", "true"),
+        ("format.pretty", "fuller"),
+    ]);
+    let times = git.added_times(&[repo.path("changes")]).unwrap();
+    assert_eq!(times[&repo.path("changes/a.md")], ts("2026-01-01T00:00:00Z"));
+}
+
+#[test]
 fn added_times_in_repo_without_commits_is_empty() {
     let repo = Repo::new();
     repo.write("changes/a.md", "A.");
@@ -345,6 +421,22 @@ fn changed_files_against_a_commit_sha_and_no_changes() {
     assert!(repo.git.changed_files(head.trim()).unwrap().is_empty());
     let base = repo.sh(&["rev-parse", "main~1"]);
     assert_eq!(repo.git.changed_files(base.trim()).unwrap().len(), 5);
+}
+
+#[test]
+fn changed_files_ignore_user_output_config() {
+    let repo = branched_repo();
+    let git = repo.with_user_config(&[
+        ("color.ui", "always"),
+        ("color.diff", "always"),
+        ("diff.relative", "true"),
+        ("diff.renames", "copies"),
+        ("diff.external", "false"),
+    ]);
+    let expected = sorted(repo.git.changed_files("main").unwrap());
+    assert_eq!(expected.len(), 5);
+    assert_eq!(sorted(git.changed_files("main").unwrap()), expected);
+    assert_eq!(git.added_or_modified_files("main").unwrap().len(), 3);
 }
 
 #[test]
@@ -410,6 +502,11 @@ fn tracked_status() {
     repo.write("x.md", "x");
     repo.sh(&["add", "x.md"]);
     assert!(!repo.git.is_tracked(&repo.path("[x].md")).unwrap());
+
+    // Outside the working tree: not tracked, rather than a git error.
+    std::fs::write(repo.dir.join("outside.md"), "o").unwrap();
+    assert!(!repo.git.is_tracked(&repo.dir.join("outside.md")).unwrap());
+    assert!(!repo.git.is_tracked(&PathBuf::from("..").join("outside.md")).unwrap());
 }
 
 #[test]
@@ -540,6 +637,20 @@ fn annotated_tags() {
     assert!(repo.git.tag("light", "x").is_err());
     // Invalid names are reported by git.
     assert!(repo.git.tag("bad name", "x").is_err());
+}
+
+#[test]
+fn tags_ignore_column_config() {
+    let repo = Repo::new();
+    repo.write("a.md", "a");
+    repo.commit_all("init", DEFAULT_DATE);
+    for name in ["v1.0.0", "v1.1.0", "api@v0.1.0"] {
+        repo.git.tag(name, "release").unwrap();
+    }
+    let git = repo.with_user_config(&[("column.ui", "always"), ("column.tag", "always"), ("tag.sort", "-refname")]);
+    let mut tags = git.tags().unwrap();
+    tags.sort();
+    assert_eq!(tags, vec!["api@v0.1.0", "v1.0.0", "v1.1.0"]);
 }
 
 #[test]
