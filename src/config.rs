@@ -12,8 +12,10 @@ use std::path::{Path, PathBuf};
 use regex::Regex;
 use semver::{Version, VersionReq};
 
-use crate::error::Result;
+use crate::error::{Error, Result};
 use crate::version::Bump;
+
+mod resolve;
 
 /// Config file names, in order of precedence within one directory.
 pub const CONFIG_FILENAMES: [&str; 2] = [".vers.toml", "vers.toml"];
@@ -244,54 +246,137 @@ impl Preset {
     }
 }
 
+/// A preset reference kind with its templates unsubstituted.
+pub(crate) struct RefTemplate {
+    pub name: &'static str,
+    pub matcher: &'static str,
+    pub display: &'static str,
+    pub url: &'static str,
+}
+
+const GITHUB_REFS: [RefTemplate; 2] = [
+    RefTemplate { name: "issue", matcher: r"^(?<id>\d+)$", display: "#{id}", url: "{repo_url}/issues/{id}" },
+    RefTemplate { name: "pr", matcher: r"^pr-(?<id>\d+)$", display: "#{id}", url: "{repo_url}/pull/{id}" },
+];
+
+const GITLAB_REFS: [RefTemplate; 2] = [
+    RefTemplate { name: "issue", matcher: r"^(?<id>\d+)$", display: "#{id}", url: "{repo_url}/-/issues/{id}" },
+    RefTemplate { name: "mr", matcher: r"^mr-(?<id>\d+)$", display: "!{id}", url: "{repo_url}/-/merge_requests/{id}" },
+];
+
+/// The reference kind templates of a repository preset.
+pub(crate) fn preset_ref_templates(kind: RepoKind) -> &'static [RefTemplate] {
+    match kind {
+        RepoKind::Github => &GITHUB_REFS,
+        RepoKind::Gitlab => &GITLAB_REFS,
+        RepoKind::None => &[],
+    }
+}
+
 /// The reference kinds of a repository preset. If `repo_url` is `None`, kinds
 /// are still returned (so names are still recognised) but without URLs.
 pub fn preset_ref_kinds(kind: RepoKind, repo_url: Option<&str>) -> Vec<RefKind> {
-    let k = |name: &str, re: &str, display: &str, url: &str| RefKind {
-        name: name.to_string(),
-        matcher: Regex::new(re).expect("preset regex is valid"),
-        display: display.to_string(),
-        url: repo_url.map(|r| url.replace("{repo_url}", r.trim_end_matches('/'))),
-    };
-    match kind {
-        RepoKind::Github => vec![
-            k("issue", r"^(?<id>\d+)$", "#{id}", "{repo_url}/issues/{id}"),
-            k("pr", r"^pr-(?<id>\d+)$", "#{id}", "{repo_url}/pull/{id}"),
-        ],
-        RepoKind::Gitlab => vec![
-            k("issue", r"^(?<id>\d+)$", "#{id}", "{repo_url}/-/issues/{id}"),
-            k("mr", r"^mr-(?<id>\d+)$", "!{id}", "{repo_url}/-/merge_requests/{id}"),
-        ],
-        RepoKind::None => Vec::new(),
-    }
+    preset_ref_templates(kind)
+        .iter()
+        .map(|t| RefKind {
+            name: t.name.to_string(),
+            matcher: Regex::new(t.matcher).expect("preset regex is valid"),
+            display: t.display.to_string(),
+            url: repo_url.map(|r| t.url.replace("{repo_url}", r.trim_end_matches('/'))),
+        })
+        .collect()
 }
 
 /// Find the config file that applies to `path`: the nearest `.vers.toml` or
 /// `vers.toml` in `path` (if it's a directory) or any ancestor.
 pub fn find_config_for(path: &Path) -> Result<Option<PathBuf>> {
-    let _ = path;
-    todo!("phase 1: config")
+    let path = resolve::absolute(path);
+    // A path that doesn't exist (such as a deleted file in a diff) is treated
+    // as a file, so the search starts at its parent.
+    let start = if path.is_dir() {
+        path.as_path()
+    } else {
+        match path.parent() {
+            Some(parent) => parent,
+            None => return Ok(None),
+        }
+    };
+    Ok(start.ancestors().find_map(config_in_dir))
+}
+
+/// The config file in `dir` itself, honouring [`CONFIG_FILENAMES`] precedence.
+fn config_in_dir(dir: &Path) -> Option<PathBuf> {
+    CONFIG_FILENAMES.iter().map(|name| dir.join(name)).find(|p| p.is_file())
 }
 
 /// Load and fully resolve a config file: parse it, follow `extend`, apply the
 /// repository preset (detecting it for `repo = "auto"`), fill in defaults and
 /// make every path absolute. Checks `required_version` against this binary.
 pub fn load(path: &Path) -> Result<Config> {
-    let _ = path;
-    todo!("phase 1: config")
+    resolve::load_config(path)
 }
 
 /// The config that applies to `path`. Errors if there is none.
 pub fn load_for(path: &Path) -> Result<Config> {
-    let _ = path;
-    todo!("phase 1: config")
+    match find_config_for(path)? {
+        Some(config) => load(&config),
+        None => Err(no_config_error(path)),
+    }
+}
+
+fn no_config_error(path: &Path) -> Error {
+    Error::config(
+        resolve::absolute(path),
+        "no vers.toml or .vers.toml found here or in any parent directory; run `vers init` to create one",
+    )
 }
 
 /// Every package config at or below `root`, respecting `.gitignore`, sorted by
 /// path. Errors if two packages share a name.
 pub fn discover_packages(root: &Path) -> Result<Vec<Config>> {
-    let _ = root;
-    todo!("phase 1: config")
+    let root = resolve::absolute(root);
+    let mut dirs = std::collections::BTreeSet::new();
+    let walker = ignore::WalkBuilder::new(&root)
+        // `.vers.toml` is a hidden file; only `.git` itself is skipped.
+        .hidden(false)
+        .require_git(false)
+        .filter_entry(|entry| entry.file_name() != ".git")
+        .build();
+    // Unreadable directories are skipped rather than failing the whole walk.
+    for entry in walker.flatten() {
+        let is_config = entry.file_name().to_str().is_some_and(|name| CONFIG_FILENAMES.contains(&name));
+        if is_config && let Some(dir) = entry.path().parent() {
+            dirs.insert(dir.to_path_buf());
+        }
+    }
+
+    let mut packages = Vec::new();
+    for dir in dirs {
+        let Some(path) = config_in_dir(&dir) else { continue };
+        let config = load(&path)?;
+        if config.is_package() {
+            packages.push(config);
+        }
+    }
+    check_unique_names(&packages)?;
+    Ok(packages)
+}
+
+fn check_unique_names(packages: &[Config]) -> Result<()> {
+    for (i, a) in packages.iter().enumerate() {
+        if let Some(b) = packages[i + 1..].iter().find(|b| b.name() == a.name()) {
+            return Err(Error::config(
+                &b.path,
+                format!(
+                    "package name `{}` is used by both {} and {}; package names must be unique, so set a different `name` in [package]",
+                    a.name(),
+                    a.path.display(),
+                    b.path.display()
+                ),
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// Which packages a command acts on. See `docs/reference/cli.md#package-selection`.
@@ -308,6 +393,95 @@ pub enum Selection {
 /// Resolve a [`Selection`] relative to `cwd`. With `config_override` (the
 /// `--config` option), that file is used as the config for every path.
 pub fn select_packages(cwd: &Path, selection: &Selection, config_override: Option<&Path>) -> Result<Vec<Config>> {
-    let _ = (cwd, selection, config_override);
-    todo!("phase 1: config")
+    let cwd = resolve::absolute(cwd);
+    if let Some(path) = config_override {
+        let config = load(&cwd.join(path))?;
+        return select_from(vec![config], selection, &cwd, true);
+    }
+    match selection {
+        Selection::Current => {
+            let config = load_for(&cwd)?;
+            if !config.is_package() {
+                return Err(Error::config(
+                    &config.path,
+                    "the current directory isn't in a package: its nearest config is a shared config without a [package] table; run the command in a package directory, name the packages, or use --all",
+                ));
+            }
+            Ok(vec![config])
+        }
+        Selection::Named(_) | Selection::All => {
+            let packages = packages_at_or_below(&cwd)?;
+            select_from(packages, selection, &cwd, false)
+        }
+    }
 }
+
+/// Packages below `cwd`, plus the package that owns `cwd` itself (its nearest
+/// config may be in a parent directory, but `cwd` is still *in* it).
+fn packages_at_or_below(cwd: &Path) -> Result<Vec<Config>> {
+    let mut packages = discover_packages(cwd)?;
+    if let Some(path) = find_config_for(cwd)?
+        && !packages.iter().any(|p| p.path == path)
+    {
+        let owner = load(&path)?;
+        if owner.is_package() {
+            packages.insert(0, owner);
+            check_unique_names(&packages)?;
+        }
+    }
+    if packages.is_empty() && find_config_for(cwd)?.is_none() {
+        return Err(no_config_error(cwd));
+    }
+    Ok(packages)
+}
+
+fn select_from(packages: Vec<Config>, selection: &Selection, cwd: &Path, from_override: bool) -> Result<Vec<Config>> {
+    let packages: Vec<Config> = packages.into_iter().filter(Config::is_package).collect();
+    match selection {
+        Selection::Current | Selection::All => {
+            if packages.is_empty() {
+                return Err(if from_override {
+                    Error::Usage("the config given with --config has no [package] table, so it isn't a package".into())
+                } else {
+                    Error::config(
+                        cwd,
+                        "no packages found at or below this directory; a package is a vers.toml with a [package] table",
+                    )
+                });
+            }
+            Ok(packages)
+        }
+        Selection::Named(names) => {
+            let mut selected: Vec<Config> = Vec::new();
+            let mut unknown: Vec<&str> = Vec::new();
+            for name in names {
+                if selected.iter().any(|c| c.name() == name) || unknown.contains(&name.as_str()) {
+                    continue;
+                }
+                match packages.iter().find(|c| c.name() == name) {
+                    Some(config) => selected.push(config.clone()),
+                    None => unknown.push(name),
+                }
+            }
+            if !unknown.is_empty() {
+                let list = unknown.iter().map(|n| format!("`{n}`")).collect::<Vec<_>>().join(", ");
+                let noun = if unknown.len() == 1 { "package" } else { "packages" };
+                let available = if packages.is_empty() {
+                    if from_override {
+                        "the config given with --config isn't a package".to_string()
+                    } else {
+                        "no packages were found at or below the current directory".to_string()
+                    }
+                } else {
+                    let names = packages.iter().map(Config::name).collect::<Vec<_>>().join(", ");
+                    format!("available packages: {names}")
+                };
+                return Err(Error::Usage(format!("unknown {noun} {list}; {available}")));
+            }
+            Ok(selected)
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests;
