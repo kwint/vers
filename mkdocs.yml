@@ -1,0 +1,71 @@
+site_name: vers
+site_description: Fresh changelogs for every release.
+site_url: https://kwint.github.io/vers/
+repo_url: https://github.com/kwint/vers
+repo_name: kwint/vers
+edit_uri: edit/main/docs/
+
+strict: true
+
+exclude_docs: |
+  requirements.txt
+
+nav:
+  - Home: index.md
+  - Tutorials:
+      - Your first release: tutorials/first-release.md
+      - Set up a monorepo: tutorials/monorepo.md
+  - How-to guides:
+      - Install vers: how-to/install.md
+      - Link issues and merge requests: how-to/link-issues-and-merge-requests.md
+      - Manage version files: how-to/manage-version-files.md
+      - Control the release version: how-to/control-the-release-version.md
+      - Commit and tag releases: how-to/commit-and-tag-releases.md
+      - Require fragments in CI: how-to/require-fragments-in-ci.md
+      - Customise change types: how-to/customise-change-types.md
+      - Migrate from towncrier: how-to/migrate-from-towncrier.md
+  - Reference:
+      - Command line reference: reference/cli.md
+      - Configuration reference: reference/configuration.md
+      - Fragment format reference: reference/fragments.md
+      - Changelog format reference: reference/changelog.md
+  - Concepts:
+      - Why fragments?: concepts/why-fragments.md
+      - How vers chooses a version: concepts/versioning.md
+      - Monorepos and config discovery: concepts/monorepos.md
+
+theme:
+  name: material
+  features:
+    - navigation.sections
+    - navigation.instant
+    - navigation.top
+    - search.highlight
+    - search.suggest
+    - content.code.copy
+    - content.action.edit
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+
+plugins:
+  - search
+
+markdown_extensions:
+  - tables
+  - admonition
+  - attr_list
+  - toc:
+      permalink: true
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.inlinehilite
+  - pymdownx.superfences

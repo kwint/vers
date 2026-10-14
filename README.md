@@ -121,7 +121,9 @@ which takes about 10 minutes.
 
 ## Documentation
 
-The docs follow the [Diátaxis](https://diataxis.fr/) structure:
+The full documentation is published at **<https://kwint.github.io/vers/>**.
+It follows the [Diátaxis](https://diataxis.fr/) structure, and the Markdown
+sources in [`docs/`](docs/index.md) read fine on GitHub too:
 
 | | |
 |---|---|
