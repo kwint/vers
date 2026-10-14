@@ -1,0 +1,10 @@
+[package]
+name = "vers"
+
+[[version.files]]
+path = "Cargo.toml"
+key = "package.version"
+
+[check]
+# Changes that don't need a changelog entry.
+ignore = ["docs/**", "tests/**", ".github/**", "*.md", "mkdocs.yml"]

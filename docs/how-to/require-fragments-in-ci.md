@@ -19,7 +19,10 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - uses: kwint/vers-action@v1
+      - name: Install vers
+        run: |
+          curl -LsSf https://github.com/kwint/vers/releases/latest/download/vers-installer.sh | sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
       - run: vers check
 ```
 

@@ -25,12 +25,10 @@ powershell -ExecutionPolicy ByPass -c "irm https://github.com/kwint/vers/release
 
 | Ecosystem      | Install                                   | Run once, no install |
 |----------------|-------------------------------------------|----------------------|
-| Homebrew       | `brew install kwint/tap/vers`             |                      |
 | Python (uv)    | `uv tool install vers-changelog`          | `uvx --from vers-changelog vers` |
 | Python (pipx)  | `pipx install vers-changelog`             | `pipx run --spec vers-changelog vers` |
 | Node (npm)     | `npm install --global vers-changelog`     | `npx vers-changelog` |
 | Rust           | `cargo binstall vers-changelog` or `cargo install vers-changelog --locked` | |
-| Windows        | `winget install kwint.vers`               |                      |
 
 On PyPI, npm and crates.io the package is called `vers-changelog`, because
 `vers` was already taken there. The command it installs is always `vers`.
@@ -75,9 +73,10 @@ version is needed.
 ### GitHub Actions
 
 ```yaml
-- uses: kwint/vers-action@v1
-  with:
-    version: "1.2.0"     # optional; defaults to required_version, then latest
+- name: Install vers
+  run: |
+    curl -LsSf https://github.com/kwint/vers/releases/download/v1.2.0/vers-installer.sh | sh
+    echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 - run: vers check
 ```
 
@@ -88,7 +87,7 @@ vers-check:
   image: alpine:3
   before_script:
     - apk add --no-cache curl git
-    - curl -LsSf https://github.com/kwint/vers/releases/download/1.2.0/vers-installer.sh | sh
+    - curl -LsSf https://github.com/kwint/vers/releases/download/v1.2.0/vers-installer.sh | sh
     - export PATH="$HOME/.local/bin:$PATH"
   script:
     - vers check
@@ -100,7 +99,7 @@ or `npx vers-changelog@1.2.0 check` also works without a separate install step.
 ### Any CI
 
 ```sh
-curl -LsSf https://github.com/kwint/vers/releases/download/1.2.0/vers-installer.sh | sh
+curl -LsSf https://github.com/kwint/vers/releases/download/v1.2.0/vers-installer.sh | sh
 export PATH="$HOME/.local/bin:$PATH"
 ```
 
@@ -120,4 +119,4 @@ PowerShell and Elvish are also supported.
 
 - **Standalone installer:** delete `~/.local/bin/vers` (`%USERPROFILE%\.local\bin\vers.exe` on Windows).
 - **Package managers:** use their uninstall command, for example
-  `brew uninstall vers` or `uv tool uninstall vers-changelog`.
+  `uv tool uninstall vers-changelog` or `npm uninstall --global vers-changelog`.

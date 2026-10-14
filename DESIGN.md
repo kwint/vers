@@ -460,17 +460,18 @@ every channel delivers that same binary.
 |---|---|---|
 | Shell / PowerShell installer | `curl … \| sh`, `irm … \| iex` | [`dist`](https://opensource.axo.dev/cargo-dist/) (cargo-dist) |
 | Self-update | `vers self update` (installer installs only) | `axoupdater` |
-| Homebrew | `brew install kwint/tap/vers` | `dist` |
 | PyPI | `uv tool install vers-changelog`, `pipx`, `uvx --from vers-changelog vers` | `maturin`, `bindings = "bin"` (as ruff and uv do) |
 | npm | `npm i -D vers-changelog`, `npx vers-changelog` | `dist` npm installer, or per-platform optional dependencies |
 | crates.io | `cargo install vers-changelog --locked`, `cargo binstall vers-changelog` | `cargo publish` + `dist` binstall metadata |
-| winget | `winget install kwint.vers` | `dist` MSI + winget manifest PR |
-| GitHub Action | `kwint/vers-action@v1` | small wrapper around the installer |
 
 **Naming:** `vers` is taken on PyPI, npm and crates.io, so the package is
 published as `vers-changelog` on all three. The binary and command are always
-`vers`, the same way ripgrep's package installs `rg`. The Homebrew formula
-(`kwint/tap/vers`) and the GitHub repository (`kwint/vers`) use `vers`.
+`vers`, the same way ripgrep's package installs `rg`. The GitHub repository
+(`kwint/vers`) uses `vers`.
+
+Not planned for now: a Homebrew tap, winget and a dedicated GitHub Action. Each
+needs a separate repository or an external submission; the installer script
+covers those cases.
 
 Targets: Linux x86_64/aarch64 (glibc and musl), macOS x86_64/aarch64 and
 Windows x86_64/aarch64.

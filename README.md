@@ -68,9 +68,6 @@ curl -LsSf https://github.com/kwint/vers/releases/latest/download/vers-installer
 # Windows
 powershell -ExecutionPolicy ByPass -c "irm https://github.com/kwint/vers/releases/latest/download/vers-installer.ps1 | iex"
 
-# Homebrew
-brew install kwint/tap/vers
-
 # Python tooling (no Python needed at runtime)
 uv tool install vers-changelog        # or: pipx install vers-changelog
 

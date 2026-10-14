@@ -33,3 +33,16 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo test --all-targets --no-fail-fast
+
+  changelog:
+    # vers checks its own pull requests for fragments. Add the `skip-changelog`
+    # label to skip it.
+    if: github.event_name == 'pull_request' && !contains(github.event.pull_request.labels.*.name, 'skip-changelog')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo run --quiet -- check
