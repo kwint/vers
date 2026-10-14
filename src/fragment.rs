@@ -98,11 +98,19 @@ pub fn is_valid_name(s: &str) -> bool {
 
 /// Resolve `raw` against `kinds` (first match wins).
 ///
+/// A kind's pattern must match the *whole* of `raw` (as the configuration
+/// reference requires), so an unanchored pattern such as `(?<id>\d+)` doesn't
+/// turn a slug like `fix-12-crash` into a reference.
+///
 /// `{id}` in the kind's display and URL templates is replaced by the `id`
 /// capture group, or by the whole match if the pattern has no such group.
 pub fn resolve_ref(raw: &str, kinds: &[RefKind]) -> Option<Ref> {
     kinds.iter().find_map(|kind| {
         let caps = kind.matcher.captures(raw)?;
+        let whole = caps.get(0)?;
+        if whole.start() != 0 || whole.end() != raw.len() {
+            return None;
+        }
         let id = caps.name("id").or_else(|| caps.get(0)).map_or("", |m| m.as_str());
         Some(Ref {
             raw: raw.to_string(),
@@ -408,7 +416,7 @@ pub fn render_file(body: &str, extra_refs: &[String], breaking: bool) -> String 
 
 /// Frontmatter keys. Unknown keys are rejected so typos get caught.
 #[derive(Debug, Default, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[serde(deny_unknown_fields, expecting = "a table of keys (`breaking`, `refs`)")]
 struct FrontMatter {
     #[serde(default)]
     breaking: bool,
@@ -419,11 +427,34 @@ struct FrontMatter {
 /// A frontmatter reference. Strings are expected, but bare integers
 /// (`refs: [123]`) are accepted too since YAML and TOML users write them
 /// naturally.
-#[derive(Debug, Deserialize)]
-#[serde(untagged)]
+#[derive(Debug)]
 enum RefValue {
     Str(String),
     Int(u64),
+}
+
+impl<'de> Deserialize<'de> for RefValue {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> std::result::Result<Self, D::Error> {
+        struct Visitor;
+        impl serde::de::Visitor<'_> for Visitor {
+            type Value = RefValue;
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str("a reference string such as \"mr-130\"")
+            }
+            fn visit_str<E: serde::de::Error>(self, v: &str) -> std::result::Result<RefValue, E> {
+                Ok(RefValue::Str(v.to_string()))
+            }
+            fn visit_u64<E: serde::de::Error>(self, v: u64) -> std::result::Result<RefValue, E> {
+                Ok(RefValue::Int(v))
+            }
+            fn visit_i64<E: serde::de::Error>(self, v: i64) -> std::result::Result<RefValue, E> {
+                u64::try_from(v)
+                    .map(RefValue::Int)
+                    .map_err(|_| E::invalid_value(serde::de::Unexpected::Signed(v), &self))
+            }
+        }
+        d.deserialize_any(Visitor)
+    }
 }
 
 impl RefValue {
@@ -466,7 +497,9 @@ fn split_frontmatter(text: &str) -> std::result::Result<(FrontMatter, String), S
     let meta = if meta_text.trim().is_empty() {
         FrontMatter::default()
     } else if delim == "---" {
-        serde_yaml::from_str::<FrontMatter>(&meta_text).map_err(|e| {
+        // A leading newline stands in for the opening `---`, so line numbers in
+        // YAML errors are line numbers in the file.
+        serde_yaml::from_str::<FrontMatter>(&format!("\n{meta_text}")).map_err(|e| {
             format!("invalid YAML frontmatter: {e}; allowed keys are `breaking` (bool) and `refs` (list of strings)")
         })?
     } else {
@@ -482,20 +515,37 @@ fn split_frontmatter(text: &str) -> std::result::Result<(FrontMatter, String), S
 
 /// Normalise a fragment body: trim trailing whitespace on every line, drop
 /// leading and trailing blank lines, and remove leading whitespace and one
-/// leading `- ` or `* ` from the first line.
+/// leading `- ` or `* ` from the first line. A first line that is only a
+/// bullet marker (`-` or `*`, its trailing space already trimmed) is dropped,
+/// along with any blank lines after it.
 fn normalize_body(body: String) -> String {
-    let lines: Vec<&str> = body.split('\n').map(str::trim_end).collect();
-    let start = lines.iter().position(|l| !l.is_empty());
-    let Some(start) = start else {
+    let mut lines: Vec<&str> = body.split('\n').map(str::trim_end).collect();
+    while lines.last().is_some_and(|l| l.is_empty()) {
+        lines.pop();
+    }
+    let Some(start) = lines.iter().position(|l| !l.is_empty()) else {
         return String::new();
     };
-    let end = lines.iter().rposition(|l| !l.is_empty()).expect("a non-empty line exists");
-    let mut lines: Vec<String> = lines[start..=end].iter().map(|l| l.to_string()).collect();
+    let mut lines = &lines[start..];
 
     let first = lines[0].trim_start();
-    let first = first.strip_prefix("- ").or_else(|| first.strip_prefix("* ")).unwrap_or(first);
-    lines[0] = first.trim_start().to_string();
-    lines.join("\n")
+    let first = match first {
+        "-" | "*" => {
+            let rest = &lines[1..];
+            let Some(next) = rest.iter().position(|l| !l.is_empty()) else {
+                return String::new();
+            };
+            lines = &rest[next..];
+            lines[0].trim_start()
+        }
+        _ => first.strip_prefix("- ").or_else(|| first.strip_prefix("* ")).unwrap_or(first).trim_start(),
+    };
+    let mut out = first.to_string();
+    for line in &lines[1..] {
+        out.push('\n');
+        out.push_str(line);
+    }
+    out
 }
 
 #[cfg(test)]

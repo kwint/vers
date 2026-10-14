@@ -678,3 +678,73 @@ fn render_protects_body_that_looks_like_frontmatter() {
     assert!(!f.breaking);
     assert_eq!(f.body, "---\nbreaking: true\n---\nBody.");
 }
+
+// ------------------------------------------------------------ review fixes
+
+#[test]
+fn unanchored_ref_pattern_must_match_whole_name() {
+    let kind = RefKind {
+        name: "num".to_string(),
+        matcher: Regex::new(r"(?<id>\d+)").unwrap(),
+        display: "#{id}".to_string(),
+        url: None,
+    };
+    assert!(resolve_ref("fix-12-crash", std::slice::from_ref(&kind)).is_none());
+    assert!(resolve_ref("12x", std::slice::from_ref(&kind)).is_none());
+    assert_eq!(resolve_ref("12", &[kind]).unwrap().display, "#12");
+
+    // A slug containing digits stays a slug even with such a pattern configured.
+    let mut env = Env::plain();
+    env.config.refs.push(RefKind {
+        name: "num".to_string(),
+        matcher: Regex::new(r"(?<id>\d+)").unwrap(),
+        display: "#{id}".to_string(),
+        url: None,
+    });
+    assert!(env.ok("fix-12-crash.fixed.md", "Fix.").refs.is_empty());
+}
+
+#[test]
+fn bare_bullet_marker_line_is_dropped() {
+    let env = Env::new();
+    let cases = [
+        ("- \n\nText.\n", "Text."),
+        ("-\nText.\n", "Text."),
+        ("*\n  Text.\nMore.\n", "Text.\nMore."),
+        ("  -  \n\n\n", ""),
+    ];
+    for (i, (input, want)) in cases.iter().enumerate() {
+        let name = format!("m{i}.fixed.md");
+        if want.is_empty() {
+            assert!(env.err(&name, input).contains("body is empty"), "{input:?}");
+        } else {
+            assert_eq!(env.ok(&name, input).body, *want, "input {input:?}");
+        }
+    }
+}
+
+#[test]
+fn frontmatter_type_errors_are_readable() {
+    let env = Env::new();
+    for (i, content) in
+        ["---\nrefs: [true]\n---\nx\n", "+++\nrefs = [true]\n+++\nx\n", "---\nrefs: [-3]\n---\nx\n"].iter().enumerate()
+    {
+        let msg = env.err(&format!("t{i}.fixed.md"), content);
+        assert!(!msg.contains("RefValue") && !msg.contains("untagged"), "{msg}");
+        assert!(msg.contains("reference string"), "{msg}");
+    }
+    let msg = env.err("s.fixed.md", "---\nfoo\n---\nx\n");
+    assert!(!msg.contains("struct FrontMatter"), "{msg}");
+    assert!(msg.contains("`breaking`"), "{msg}");
+    // TOML integers are accepted like YAML ones.
+    let f = env.ok("i.fixed.md", "+++\nrefs = [130]\n+++\nx\n");
+    assert_eq!(f.refs[0].raw, "130");
+}
+
+#[test]
+fn yaml_error_line_numbers_count_from_file_start() {
+    let env = Env::new();
+    // `breaking` is on line 3 of the file.
+    let msg = env.err("l.fixed.md", "---\nrefs: []\nbreaking: maybe\n---\nx\n");
+    assert!(msg.contains("line 3"), "{msg}");
+}
