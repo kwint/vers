@@ -12,8 +12,11 @@ vers init --from-towncrier
 This reads `[tool.towncrier]` from `pyproject.toml` (or `towncrier.toml`) and
 writes a `vers.toml` with:
 
-- the same fragment directory
-- the same changelog file
+- the same fragment directory (towncrier's default if `directory` isn't set:
+  `<package_dir>/<package>/newsfragments` when `package` is set, otherwise
+  `newsfragments`)
+- the same changelog file, if it's Markdown. towncrier's default is
+  `NEWS.rst`; in that case vers uses `CHANGELOG.md` and warns
 - a `[[version.files]]` entry for `pyproject.toml`, if the version is there
 - custom `[[types]]`, but only if your towncrier types don't map onto the
   Keep a Changelog types (see the next step)

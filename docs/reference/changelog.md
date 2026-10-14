@@ -70,6 +70,10 @@ Pre-release sections look like any other release (`## [1.3.0-rc.1] - …`). When
 3. writes them as one `## [1.3.0]` section
 4. removes the pre-release sections and their link references
 
+When `fold_prereleases` is off, the pre-release sections are kept and the final
+release contains only the new fragments. If there are none, it repeats the
+entries of its pre-release sections.
+
 ## Line endings and encoding
 
 The changelog must be UTF-8. vers keeps the file's existing line endings (LF or

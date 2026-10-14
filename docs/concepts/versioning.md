@@ -24,6 +24,8 @@ may follow a different scheme, and version files can be edited by anyone.
 2. **The version files, if they're newer than the current version.** This
    respects a bump you or another tool already made, such as `npm version` or
    `cargo set-version`. vers releases that version and leaves the files alone.
+   If there is no current version yet, the version files always count as
+   newer, so a project whose `VERSION` says `0.1.0` releases `0.1.0` first.
 3. **Inference from the fragments,** applied to the current version, or
    `[version] initial` (`0.1.0`) if there is no current version.
 

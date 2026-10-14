@@ -18,7 +18,7 @@ fn main() -> ExitCode {
     match vers::commands::run(&ctx, &cli.command) {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
-            eprintln!("error: {e}");
+            eprintln!("error: {}", vers::context::relativise_message(&e.to_string(), &ctx.cwd));
             ExitCode::from(e.exit_code() as u8)
         }
     }

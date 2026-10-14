@@ -160,7 +160,8 @@ pub fn load(path: &Path, config: &Config) -> Result<Fragment> {
     let mut refs = Vec::new();
     match resolve_ref(&parsed.name, &config.refs) {
         Some(r) => refs.push(r),
-        None if looks_like_ref(&parsed.name) => {
+        // With no reference kinds configured, every name is a plain slug.
+        None if !config.refs.is_empty() && looks_like_ref(&parsed.name) => {
             return Err(Error::fragment(path, unmatched_ref_message(&parsed.name, &config.refs)));
         }
         None => {}

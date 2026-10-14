@@ -133,6 +133,7 @@ Fix another bug:
 
 ```console
 $ vers new fixed 9 -m "Trim whitespace around names."
+Created changes/9.fixed.md
 $ vers status
 greeter  0.1.0 → 0.1.1 (inferred: patch)  1 fragment: 1 fixed
 ```

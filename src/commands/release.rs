@@ -16,13 +16,12 @@ use serde::Serialize;
 
 use crate::changelog::{self, Changelog};
 use crate::cli::ReleaseArgs;
-use crate::cli::VersionChoiceArgs;
 use crate::config::{self, Config, Selection};
 use crate::context::Context;
 use crate::error::{Error, Result};
 use crate::git::Git;
 use crate::plan::{self, PackagePlan};
-use crate::version::{self, ChooseInput, VersionSource};
+use crate::version::{self, VersionSource};
 
 /// A file whose new contents have been computed but not yet written.
 struct FileChange {
@@ -94,7 +93,7 @@ pub fn run(ctx: &Context, args: &ReleaseArgs) -> Result<()> {
     // Packages and skips in selection order, for the text output.
     let mut order: Vec<Result<usize, String>> = Vec::new();
     for config in &packages {
-        let plan = plan_package(config, git.as_ref(), &args.choice, args.force)?;
+        let plan = plan::plan_package(config, git.as_ref(), &args.choice, args.force)?;
         for warning in &plan.warnings {
             ctx.warn(warning);
         }
@@ -216,44 +215,6 @@ pub fn run(ctx: &Context, args: &ReleaseArgs) -> Result<()> {
         }
     }
     Ok(())
-}
-
-/// [`plan::plan_package`], except that version files above `[version]
-/// initial` count as the current version when the changelog and tags have no
-/// release (the monorepo tutorial: `Cargo.toml` at 1.4.0 → release 1.5.0),
-/// while files at the initial version are released as they are (the first
-/// release tutorial: `VERSION` at 0.1.0 → release 0.1.0).
-///
-/// TODO: private workaround; this belongs in `plan::plan_package` so `status`,
-/// `draft` and `version` agree.
-fn plan_package(config: &Config, git: Option<&Git>, choice: &VersionChoiceArgs, force: bool) -> Result<PackagePlan> {
-    let mut plan = plan::plan_package(config, git, choice, force)?;
-    let Some((files, _)) = plan.files_version.clone() else { return Ok(plan) };
-    if plan.current.is_some() || !files.cmp_precedence(&config.version.initial).is_gt() {
-        return Ok(plan);
-    }
-    if let Some(next) = &plan.next {
-        plan.warnings.retain(|w| !next.warnings.contains(w));
-    }
-    let has_visible = plan.visible_fragments().next().is_some();
-    let finalising = choice.pre.is_none() && !files.pre.is_empty();
-    plan.current = Some(files.clone());
-    plan.next = if has_visible || finalising {
-        let next = version::choose(&ChooseInput {
-            current: Some(files),
-            files_version: plan.files_version.clone(),
-            cli_version: choice.version.clone(),
-            cli_bump: choice.bump,
-            pre: choice.pre.clone(),
-            fragments_bump: version::infer_bump(&plan.fragments, &config.types),
-            settings: &config.version,
-        })?;
-        plan.warnings.extend(next.warnings.iter().cloned());
-        Some(next)
-    } else {
-        None
-    };
-    Ok(plan)
 }
 
 /// Compute a package's changelog, version file contents and fragments to

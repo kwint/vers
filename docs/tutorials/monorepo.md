@@ -16,7 +16,13 @@ $ git remote add origin https://gitlab.com/example/shop.git
 $ mkdir -p packages/api packages/web
 $ printf '[package]\nname = "api"\nversion = "1.4.0"\n' > packages/api/Cargo.toml
 $ echo '{ "name": "web", "version": "0.3.0" }' > packages/web/package.json
+$ git add -A && git commit -qm "Existing code"
+$ git tag api@v1.4.0 && git tag web@v0.3.0
 ```
+
+Both packages were released before you started using vers, and those releases
+are tagged. vers uses the tags as the current version until the changelogs
+have releases of their own.
 
 ## 2. Add a shared root config
 

@@ -17,6 +17,17 @@ With this setting, `vers release`:
    `commit_message`.
 3. Tags that commit using `tag_format`.
 
+The output ends with the commit and the tag:
+
+```console
+$ vers release
+Releasing app 1.3.0 (inferred: minor)
+  Updated CHANGELOG.md
+  Removed 2 fragments
+  Committed 1a2b3c4
+  Tagged v1.3.0
+```
+
 vers never pushes. Push when you're ready:
 
 ```sh

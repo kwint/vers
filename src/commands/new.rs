@@ -177,7 +177,7 @@ fn validate_name(name: &str, kinds: &[RefKind]) -> Result<()> {
             "invalid fragment name `{name}`: use only letters, digits, `-` and `_` (e.g. `123`, `mr-45` or `oauth-login`)"
         )));
     }
-    if fragment::resolve_ref(name, kinds).is_none() && fragment::looks_like_ref(name) {
+    if !kinds.is_empty() && fragment::resolve_ref(name, kinds).is_none() && fragment::looks_like_ref(name) {
         let configured = if kinds.is_empty() {
             "no reference kinds are configured".to_string()
         } else {

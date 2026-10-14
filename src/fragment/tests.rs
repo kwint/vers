@@ -235,11 +235,13 @@ fn unmatched_reference_in_filename_is_an_error() {
     assert!(msg.contains("[refs.<kind>]"), "{msg}");
     assert!(msg.contains("`mr`"), "{msg}");
     assert!(msg.contains("pr-45.added.md"), "{msg}");
+}
 
+#[test]
+fn without_reference_kinds_every_name_is_a_slug() {
     let env = Env::plain();
-    let msg = env.err("123.fixed.md", "Text.");
-    assert!(msg.contains("no reference kinds are configured"), "{msg}");
-    // Without kinds, a non-ref-looking name is still a fine slug.
+    assert!(env.ok("123.fixed.md", "Text.").refs.is_empty());
+    assert!(env.ok("mr-45.added.md", "Text.").refs.is_empty());
     assert!(env.ok("fix-123-crash.fixed.md", "Text.").refs.is_empty());
 }
 

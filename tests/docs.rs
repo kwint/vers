@@ -159,13 +159,13 @@ fn tutorial(name: &str) -> PathBuf {
 }
 
 #[test]
-#[ignore = "enable once the commands are implemented (phase 2)"]
+#[cfg_attr(windows, ignore = "the tutorials use a POSIX shell")]
 fn tutorial_first_release() {
     run_tutorial(&tutorial("first-release.md"));
 }
 
 #[test]
-#[ignore = "enable once the commands are implemented (phase 2)"]
+#[cfg_attr(windows, ignore = "the tutorials use a POSIX shell")]
 fn tutorial_monorepo() {
     run_tutorial(&tutorial("monorepo.md"));
 }

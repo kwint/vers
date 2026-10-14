@@ -92,10 +92,15 @@ vers status [PACKAGE]...
 
 ```console
 $ vers status
-api  1.4.0 → 1.5.0 (inferred: minor)        2 fragments: 1 added, 1 changed
-web  0.3.1 → 0.4.0 (from package.json)      2 fragments: 2 fixed
-cli  2.0.0                                  no fragments
+api  1.4.0 → 1.5.0 (inferred: minor)    2 fragments: 1 added, 1 changed
+cli  2.0.0                              no fragments
+web  0.3.1 → 0.4.0 (from package.json)  2 fragments: 2 fixed
 ```
+
+Packages are listed by path. The source in brackets is one of
+`inferred: <bump>` (the bump actually applied, so `patch` for an `added`
+fragment on `0.x`), `from <version file>`, `from command line`, `initial` or
+`finalising pre-release`.
 
 ---
 
@@ -166,6 +171,9 @@ The check fails if:
   reference but matches no reference kind, malformed frontmatter or an empty
   body
 
+A package also passes when its changelog file changed on the branch, so a
+release commit doesn't need a new fragment (as with `towncrier check`).
+
 It's skipped entirely when `VERS_SKIP=1` is set.
 
 ---
@@ -197,7 +205,8 @@ vers migrate towncrier [--dry-run] [--map <FROM=TO>]... [--changelog]
 
 | Option | Description |
 |---|---|
-| `--map <FROM=TO>` | Override the type mapping, for example `misc=changed`. |
+| `--dry-run` | Print the renames and deletions (and, with `--changelog`, the diff) without changing anything. |
+| `--map <FROM=TO>` | Override the type mapping, for example `misc=changed`. Use `<type>=drop` to delete those fragments. |
 | `--changelog` | Also rewrite towncrier-style release headings to Keep a Changelog headings. |
 
 ---
@@ -256,5 +265,24 @@ Example for `vers status`:
       ]
     }
   ]
+}
+```
+
+Example for `vers release --all`:
+
+```json
+{
+  "released": [
+    {
+      "name": "api",
+      "version": "1.5.0",
+      "source": "inferred: minor",
+      "files": ["packages/api/CHANGELOG.md", "packages/api/Cargo.toml"],
+      "removed": ["packages/api/changes/mr-12.added.md"],
+      "tag": null
+    }
+  ],
+  "skipped": ["web"],
+  "dry_run": false
 }
 ```

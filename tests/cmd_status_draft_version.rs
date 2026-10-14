@@ -440,7 +440,7 @@ fn draft_version_and_bump_options() {
     let repo = greeter();
     let first = |out: std::process::Output| stdout(&out).lines().next().unwrap().to_string();
     assert_eq!(first(repo.vers().args(["draft", "--version", "2.0.0"]).output().unwrap()), "## [2.0.0] - 2026-10-14");
-    assert_eq!(first(repo.vers().args(["draft", "--bump", "major"]).output().unwrap()), "## [0.1.0] - 2026-10-14");
+    assert_eq!(first(repo.vers().args(["draft", "--bump", "major"]).output().unwrap()), "## [0.2.0] - 2026-10-14");
     assert_eq!(first(repo.vers().args(["draft", "--pre", "rc"]).output().unwrap()), "## [0.1.0-rc.1] - 2026-10-14");
 }
 

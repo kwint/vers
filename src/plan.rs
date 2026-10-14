@@ -102,7 +102,15 @@ pub fn plan_package(
             cli_version: choice.version.clone(),
             cli_bump: choice.bump,
             pre: choice.pre.clone(),
-            fragments_bump: version::infer_bump(&fragments, &config.types),
+            fragments_bump: {
+                let visible: Vec<Fragment> = fragments
+                    .iter()
+                    .filter(|f| config.find_type(&f.type_name).is_none_or(|t| !t.hidden))
+                    .cloned()
+                    .collect();
+                let bump = version::infer_bump(&visible, &config.types);
+                if has_visible { bump.max(crate::version::Bump::Patch) } else { bump }
+            },
             settings: &config.version,
         })?;
         warnings.extend(plan.warnings.iter().cloned());

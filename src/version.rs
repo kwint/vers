@@ -60,7 +60,8 @@ pub enum VersionSource {
     /// The version files were newer than the current version. Holds the path
     /// of the first version file, for display.
     Files(PathBuf),
-    /// Inferred from the fragments.
+    /// Inferred from the fragments. Holds the bump actually applied, so on 0.x
+    /// with `zero_major_shift` an `added` fragment gives `Patch`.
     Inferred(Bump),
     /// Finalising a pre-release (`1.3.0-rc.2` → `1.3.0`).
     FinalisePrerelease,
@@ -203,9 +204,10 @@ pub fn choose(input: &ChooseInput<'_>) -> Result<VersionPlan> {
     let (next, source) = if let Some(v) = &input.cli_version {
         (v.clone(), VersionSource::Cli)
     } else if let Some(bump) = input.cli_bump {
-        let target = match current {
-            Some(c) => apply_bump(c, bump, shift),
-            None => settings.initial.clone(),
+        let target = match (current, &input.files_version) {
+            (Some(c), _) => apply_bump(c, bump, shift),
+            (None, Some((files, _))) => apply_bump(files, bump, shift),
+            (None, None) => settings.initial.clone(),
         };
         (with_pre(target, current, pre)?, VersionSource::Cli)
     } else if let Some((files, path)) = files_newer {
@@ -230,7 +232,8 @@ pub fn choose(input: &ChooseInput<'_>) -> Result<VersionPlan> {
             }
             Some(c) => {
                 let target = apply_bump(c, input.fragments_bump, shift);
-                (with_pre(target, current, pre)?, VersionSource::Inferred(input.fragments_bump))
+                let applied = effective_bump(c, input.fragments_bump, shift);
+                (with_pre(target, current, pre)?, VersionSource::Inferred(applied))
             }
         }
     };

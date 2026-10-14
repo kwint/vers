@@ -49,7 +49,7 @@ impl Context {
     /// Print a warning to stderr.
     pub fn warn(&self, text: impl AsRef<str>) {
         if !self.quiet {
-            eprintln!("warning: {}", text.as_ref());
+            eprintln!("warning: {}", relativise_message(text.as_ref(), &self.cwd));
         }
     }
 
@@ -65,16 +65,37 @@ impl Context {
         println!("{}", serde_json::to_string_pretty(value).expect("output is serialisable"));
     }
 
-    /// `path` relative to the current directory when it's below it, for display.
+    /// `path` relative to the current directory (see [`display_relative`]), for display.
     pub fn display_path(&self, path: &Path) -> String {
         display_relative(path, &self.cwd)
     }
 }
 
-/// `path` relative to `base` when below it, otherwise unchanged. Always uses `/`.
+/// `path` relative to `base` with `/` separators, using `..` when `path` isn't
+/// below `base`, and an empty string when they're equal. Falls back to the full path when they share no root (e.g.
+/// different drives on Windows).
 pub fn display_relative(path: &Path, base: &Path) -> String {
-    let shown = path.strip_prefix(base).unwrap_or(path);
-    shown.to_string_lossy().replace('\\', "/")
+    use std::path::Component;
+    let path_parts: Vec<Component> = path.components().collect();
+    let base_parts: Vec<Component> = base.components().collect();
+    let common = path_parts.iter().zip(&base_parts).take_while(|(a, b)| a == b).count();
+    if common == 0 {
+        return path.to_string_lossy().replace('\\', "/");
+    }
+    let mut parts: Vec<String> = (common..base_parts.len()).map(|_| "..".to_string()).collect();
+    parts.extend(path_parts[common..].iter().map(|c| c.as_os_str().to_string_lossy().into_owned()));
+    parts.join("/")
+}
+
+/// `message` with absolute paths below `base` shown relative to it. Core
+/// modules format paths with `Path::display`; this keeps user-facing errors
+/// and warnings short.
+pub fn relativise_message(message: &str, base: &Path) -> String {
+    let mut prefix = base.display().to_string();
+    if !prefix.ends_with(std::path::MAIN_SEPARATOR) {
+        prefix.push(std::path::MAIN_SEPARATOR);
+    }
+    message.replace(&prefix, "")
 }
 
 /// Today's date as `YYYY-MM-DD` in local time. Honours `SOURCE_DATE_EPOCH`

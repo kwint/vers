@@ -49,8 +49,9 @@ fn single(name: &str, changelog_versions: &[&str], version_file: Option<&str>) -
     repo
 }
 
-/// The tutorial's monorepo: shared root config, `api` (Cargo.toml 1.4.0) and
-/// `web` (package.json 0.3.0), with a GitLab origin.
+/// A monorepo like the tutorial's: shared root config, `api` (Cargo.toml and
+/// changelog at 1.4.0) and `web` (package.json and changelog at 0.3.0), with a
+/// GitLab origin.
 fn monorepo() -> TestRepo {
     let repo = TestRepo::new();
     repo.git(&["remote", "add", "origin", "https://gitlab.com/example/shop.git"]);
@@ -68,8 +69,8 @@ fn monorepo() -> TestRepo {
         "packages/web/vers.toml",
         "extend = \"../../vers.toml\"\n\n[package]\nname = \"web\"\n\n[[version.files]]\npath = \"package.json\"\nkey = \"version\"\n",
     );
-    for pkg in ["api", "web"] {
-        repo.write(&format!("packages/{pkg}/CHANGELOG.md"), HEADER);
+    for (pkg, version) in [("api", "1.4.0"), ("web", "0.3.0")] {
+        repo.write(&format!("packages/{pkg}/CHANGELOG.md"), &changelog_with(&[version]));
         repo.write(&format!("packages/{pkg}/changes/.gitkeep"), "");
     }
     repo.commit("Set up vers", Some("2026-01-01T00:00:00Z"));
@@ -149,7 +150,7 @@ fn monorepo_tutorial_release_current_then_all() {
     );
     assert_eq!(repo.read("packages/web/package.json"), "{ \"name\": \"web\", \"version\": \"0.3.1\" }\n");
     assert!(repo.read("packages/web/CHANGELOG.md").contains(
-        "[Unreleased]: https://gitlab.com/example/shop/-/compare/web@v0.3.1...HEAD\n[0.3.1]: https://gitlab.com/example/shop/-/tags/web@v0.3.1\n"
+        "[Unreleased]: https://gitlab.com/example/shop/-/compare/web@v0.3.1...HEAD\n[0.3.1]: https://gitlab.com/example/shop/-/compare/web@v0.3.0...web@v0.3.1\n"
     ));
 
     repo.vers().args(["release", "--all"]).assert().success().stderr("").stdout(
@@ -171,7 +172,7 @@ fn release_named_package_from_root() {
     );
     // api is untouched.
     assert!(repo.exists("packages/api/changes/1.fixed.md"));
-    assert_eq!(repo.read("packages/api/CHANGELOG.md"), HEADER);
+    assert_eq!(repo.read("packages/api/CHANGELOG.md"), changelog_with(&["1.4.0"]));
 }
 
 #[test]
@@ -247,9 +248,9 @@ fn inferred_bumps() {
         ("1.4.2", &[("a.changed.md", "---\nbreaking: true\n---\nBreak.\n")], "Releasing app 2.0.0 (inferred: major)"),
         // 0.x: each bump moves down one level.
         ("0.4.2", &[("a.fixed.md", "Fix.\n")], "Releasing app 0.4.3 (inferred: patch)"),
-        ("0.4.2", &[("a.fixed.md", "Fix.\n"), ("b.added.md", "Add.\n")], "Releasing app 0.4.3 (inferred: minor)"),
-        ("0.4.2", &[("a.added.md", "Add.\n"), ("b.removed.md", "Rm.\n")], "Releasing app 0.5.0 (inferred: major)"),
-        ("0.4.2", &[("a.changed.md", "---\nbreaking: true\n---\nBreak.\n")], "Releasing app 0.5.0 (inferred: major)"),
+        ("0.4.2", &[("a.fixed.md", "Fix.\n"), ("b.added.md", "Add.\n")], "Releasing app 0.4.3 (inferred: patch)"),
+        ("0.4.2", &[("a.added.md", "Add.\n"), ("b.removed.md", "Rm.\n")], "Releasing app 0.5.0 (inferred: minor)"),
+        ("0.4.2", &[("a.changed.md", "---\nbreaking: true\n---\nBreak.\n")], "Releasing app 0.5.0 (inferred: minor)"),
     ];
     for (current, fragments, expected) in cases {
         let (line, _) = release_version(&[current], fragments, &[]);
@@ -504,7 +505,7 @@ fn a_failing_package_aborts_all_writes() {
         .code(1)
         .stdout("")
         .stderr(predicate::str::contains("older than the current version 0.5.0"));
-    assert_eq!(repo.read("packages/api/CHANGELOG.md"), HEADER);
+    assert_eq!(repo.read("packages/api/CHANGELOG.md"), changelog_with(&["1.4.0"]));
     assert_eq!(repo.read("packages/api/Cargo.toml"), "[package]\nname = \"api\"\nversion = \"1.4.0\"\n");
     assert!(repo.exists("packages/api/changes/a.added.md"));
     assert!(repo.exists("packages/web/changes/b.fixed.md"));
@@ -839,22 +840,26 @@ fn pre_on_top_of_a_newer_files_version_rewrites_the_files() {
 }
 
 #[test]
-fn files_above_initial_without_a_release_are_the_current_version() {
-    // No changelog release and no tags: VERSION at 1.4.0 means 1.4.0 was
-    // released before vers, so a fix gives 1.4.1.
+fn version_file_without_a_changelog_release_is_released_as_is() {
+    // No changelog release and no tags: the version files are newer than
+    // nothing, so their version is released.
     let repo = single("app", &[], Some("1.4.0"));
     repo.write("changes/a.fixed.md", "Fix.\n");
-    repo.vers().arg("release").assert().success().stdout(
-        "Releasing app 1.4.1 (inferred: patch)\n  Updated CHANGELOG.md\n  Updated VERSION (1.4.0 → 1.4.1)\n  Removed 1 fragment\n",
-    );
-    // --version can't go backwards from it.
-    repo.write("changes/b.fixed.md", "Fix.\n");
-    repo.vers().args(["release", "--version", "1.0.0"]).assert().code(1);
+    repo.vers()
+        .arg("release")
+        .assert()
+        .success()
+        .stdout("Releasing app 1.4.0 (from VERSION)\n  Updated CHANGELOG.md\n  Removed 1 fragment\n");
+    assert_eq!(repo.read("VERSION"), "1.4.0\n");
 }
 
-// ---------------------------------------------------------------------------
-// Paths outside the current directory, shared files, shared tags
-// ---------------------------------------------------------------------------
+#[test]
+fn bump_without_a_release_starts_from_the_version_files() {
+    let repo = single("app", &[], Some("1.4.0"));
+    repo.write("changes/a.fixed.md", "Fix.\n");
+    repo.vers().args(["release", "--bump", "minor"]).assert().success();
+    assert_eq!(repo.read("VERSION"), "1.5.0\n");
+}
 
 #[test]
 fn paths_outside_the_current_directory_use_dot_dot() {
@@ -954,6 +959,7 @@ fn packages_creating_the_same_tag_abort_before_writing() {
     let repo = monorepo();
     repo.write("vers.toml", "[version]\ntag = true\n");
     repo.write("packages/web/package.json", "{ \"name\": \"web\", \"version\": \"1.4.0\" }\n");
+    repo.write("packages/web/CHANGELOG.md", &changelog_with(&["1.4.0"]));
     repo.write("packages/api/changes/a.fixed.md", "Fix.\n");
     repo.write("packages/web/changes/b.fixed.md", "Fix.\n");
     repo.commit("Fragments", Some("2026-02-01T00:00:00Z"));
