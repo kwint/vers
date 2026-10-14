@@ -7,11 +7,12 @@ use std::path::{Component, Path};
 use serde::Serialize;
 
 use crate::cli::{StatusArgs, VersionChoiceArgs};
+use crate::commands::draft::plan_and_warn;
 use crate::config::{self, Selection};
-use crate::context::{Context, display_relative};
+use crate::context::Context;
 use crate::error::Result;
 use crate::git::Git;
-use crate::plan::{self, PackagePlan};
+use crate::plan::PackagePlan;
 use crate::version::{Bump, VersionPlan, VersionSource};
 
 pub fn run(ctx: &Context, args: &StatusArgs) -> Result<()> {
@@ -21,11 +22,7 @@ pub fn run(ctx: &Context, args: &StatusArgs) -> Result<()> {
 
     let mut plans = Vec::with_capacity(packages.len());
     for package in &packages {
-        let plan = plan::plan_package(package, git.as_ref(), &VersionChoiceArgs::default(), false)?;
-        for warning in &plan.warnings {
-            ctx.warn(warning);
-        }
-        plans.push(plan);
+        plans.push(plan_and_warn(ctx, package, git.as_ref(), &VersionChoiceArgs::default())?);
     }
 
     if ctx.json_output() {
@@ -49,11 +46,38 @@ pub fn run(ctx: &Context, args: &StatusArgs) -> Result<()> {
 pub fn source_label(next: &VersionPlan, package_dir: &Path) -> String {
     match (&next.source, &next.current) {
         (VersionSource::Inferred(_), None) => "initial".to_string(),
-        (VersionSource::Inferred(bump), Some(_)) => format!("inferred: {bump}"),
-        (VersionSource::Files(path), _) => format!("from {}", display_relative(path, package_dir)),
+        (VersionSource::Inferred(_), Some(_)) => format!("inferred: {}", inferred_bump(next).expect("inferred")),
+        (VersionSource::Files(path), _) => format!("from {}", relative_path(path, package_dir)),
         (VersionSource::Cli, _) => "from command line".to_string(),
         (VersionSource::FinalisePrerelease, _) => "finalising pre-release".to_string(),
     }
+}
+
+/// The bump actually applied for an inferred version with a current version,
+/// else `None`.
+///
+/// [`VersionSource::Inferred`] holds the fragments' bump before
+/// `zero_major_shift`, so `0.4.2 → 0.4.3` from an `added` fragment would be
+/// labelled `minor`. The applied bump is read off the versions instead; when
+/// they don't show it (finalising a pre-release's base), the fragments' bump
+/// is used.
+fn inferred_bump(next: &VersionPlan) -> Option<Bump> {
+    let (VersionSource::Inferred(bump), Some(current)) = (&next.source, &next.current) else {
+        return None;
+    };
+    let (from, to) = (current, &next.next);
+    let applied = if !from.pre.is_empty() {
+        *bump
+    } else if to.major > from.major {
+        Bump::Major
+    } else if to.minor > from.minor {
+        Bump::Minor
+    } else if to.patch > from.patch {
+        Bump::Patch
+    } else {
+        *bump
+    };
+    Some(applied)
 }
 
 /// The `version_source` value in JSON output.
@@ -175,10 +199,7 @@ fn json_package(ctx: &Context, plan: &PackagePlan) -> PackageJson {
         current_version: plan.current.as_ref().map(ToString::to_string),
         next_version: next.map(|n| n.next.to_string()),
         version_source: next.map(source_kind),
-        bump: next.and_then(|n| match (&n.source, &n.current) {
-            (VersionSource::Inferred(bump), Some(_)) => Some(*bump),
-            _ => None,
-        }),
+        bump: next.and_then(inferred_bump),
         fragments: plan
             .fragments
             .iter()

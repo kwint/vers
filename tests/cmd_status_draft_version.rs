@@ -652,3 +652,113 @@ fn version_files_older_than_changelog_is_an_error() {
     let out = repo.vers().arg("version").assert().code(1).stdout("").get_output().clone();
     assert!(String::from_utf8_lossy(&out.stderr).contains("older than the current version 1.0.0"));
 }
+
+// ---------------------------------------------------------------------------
+// Review fixes
+// ---------------------------------------------------------------------------
+
+#[test]
+fn status_version_file_outside_package_dir_is_shown_relative_to_it() {
+    let repo = TestRepo::new();
+    repo.write("VERSION", "2.1.0\n")
+        .write("packages/api/vers.toml", "[package]\nname = \"api\"\n\n[[version.files]]\npath = \"../../VERSION\"\n")
+        .write("packages/api/CHANGELOG.md", &changelog("\n## [2.0.0] - 2026-01-01\n\n### Added\n\n- X.\n"))
+        .write("packages/api/changes/x.fixed.md", "X.\n");
+    repo.vers()
+        .arg("status")
+        .assert()
+        .success()
+        .stdout("api  2.0.0 → 2.1.0 (from ../../VERSION)  1 fragment: 1 fixed\n")
+        .stderr("");
+}
+
+#[test]
+fn status_inferred_label_shows_bump_after_zero_major_shift() {
+    let repo = TestRepo::new();
+    repo.write("vers.toml", "[package]\nname = \"tool\"\n")
+        .write("CHANGELOG.md", &changelog("\n## [0.4.2] - 2026-01-01\n\n### Added\n\n- X.\n"))
+        .write("changes/a.added.md", "A.\n");
+    repo.vers().arg("status").assert().success().stdout("tool  0.4.2 → 0.4.3 (inferred: patch)  1 fragment: 1 added\n");
+    let out = repo.vers().args(["--format", "json", "status"]).output().unwrap();
+    assert_eq!(json_stdout(&out)["packages"][0]["bump"], "patch");
+
+    repo.write("changes/b.changed.md", "---\nbreaking: true\n---\nB.\n");
+    repo.vers()
+        .arg("status")
+        .assert()
+        .success()
+        .stdout("tool  0.4.2 → 0.5.0 (inferred: minor)  2 fragments: 1 added, 1 changed\n");
+
+    repo.write("vers.toml", "[package]\nname = \"tool\"\n\n[version]\nzero_major_shift = false\n");
+    repo.vers()
+        .arg("status")
+        .assert()
+        .success()
+        .stdout("tool  0.4.2 → 1.0.0 (inferred: major)  2 fragments: 1 added, 1 changed\n");
+}
+
+#[test]
+fn warnings_show_paths_relative_to_cwd() {
+    let repo = shop();
+    repo.write("packages/web/changes/x.fixed.md", "---\nrefs: [\"bogus ref\"]\n---\nHi.\n");
+    let warning = "reference `bogus ref` matches no reference kind and is shown as plain text\n";
+    repo.vers().arg("status").assert().success().stderr(format!("warning: packages/web/changes/x.fixed.md: {warning}"));
+    repo.vers_in("packages/web")
+        .arg("draft")
+        .assert()
+        .success()
+        .stderr(format!("warning: changes/x.fixed.md: {warning}"));
+    repo.vers_in("packages/web/changes")
+        .args(["version", "--next"])
+        .assert()
+        .success()
+        .stdout("0.3.1\n")
+        .stderr(format!("warning: x.fixed.md: {warning}"));
+}
+
+#[test]
+fn version_file_warning_is_relative_to_cwd() {
+    let repo = TestRepo::new();
+    repo.write("packages/tool/vers.toml", "[package]\nname = \"tool\"\n\n[[version.files]]\npath = \"VERSION\"\n")
+        .write("packages/tool/VERSION", "1.4.3\n")
+        .write("packages/tool/CHANGELOG.md", &changelog("\n## [1.4.2] - 2026-01-01\n\n### Added\n\n- X.\n"))
+        .write("packages/tool/changes/x.added.md", "X.\n");
+    repo.vers().arg("status").assert().success().stderr(
+        "warning: packages/tool/VERSION sets version 1.4.3, but the pending fragments suggest a minor bump (1.5.0); \
+         releasing 1.4.3\n",
+    );
+}
+
+#[test]
+fn version_file_errors_are_relative_to_cwd() {
+    let repo = shop();
+    repo.write("packages/web/package.json", "{ \"name\": \"web\", \"version\": \"0.2.0\" }\n");
+    repo.vers().arg("status").assert().code(1).stdout("").stderr(
+        "error: packages/web/package.json: version file is older than the current version 0.3.0:\n  \
+         packages/web/package.json: 0.2.0\n\
+         hint: a release was probably made without vers; set the files to 0.3.0 or newer, or pass --force\n",
+    );
+    repo.vers_in("packages/web").arg("version").assert().code(1).stdout("").stderr(
+        "error: package.json: version file is older than the current version 0.3.0:\n  package.json: 0.2.0\n\
+         hint: a release was probably made without vers; set the files to 0.3.0 or newer, or pass --force\n",
+    );
+}
+
+#[test]
+fn draft_finalising_without_folding_uses_prerelease_entries() {
+    let repo = prerelease_repo();
+    repo.write(
+        "vers.toml",
+        "[package]\nname = \"app\"\n\n[version]\nfold_prereleases = false\n\n\
+         [[types]]\nname = \"added\"\nheading = \"Added\"\n\n\
+         [[types]]\nname = \"fixed\"\nheading = \"Fixed\"\n\n\
+         [[types]]\nname = \"internal\"\nheading = \"Internal\"\nhidden = true\n",
+    );
+    let expected = "## [1.3.0] - 2026-10-14\n\n### Added\n\n- Feature.\n\n### Fixed\n\n- First fix.\n- Second fix.\n";
+    repo.vers().arg("draft").assert().success().stdout(expected);
+    // Only hidden fragments pending: still the pre-release entries, not
+    // "nothing to release" while `version --next` says 1.3.0.
+    repo.write("changes/x.internal.md", "Refactor.\n");
+    repo.vers().args(["version", "--next"]).assert().success().stdout("1.3.0\n");
+    repo.vers().arg("draft").assert().success().stdout(expected);
+}
