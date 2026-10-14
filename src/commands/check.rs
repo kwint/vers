@@ -5,7 +5,7 @@
 //! `docs/how-to/require-fragments-in-ci.md`, `docs/concepts/monorepos.md`.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::rc::Rc;
 
 use globset::{Glob, GlobSet, GlobSetBuilder};
@@ -60,9 +60,6 @@ pub fn run(ctx: &Context, args: &CheckArgs) -> Result<()> {
 
     for file in &changed {
         let Some(config) = resolver.config_for(file)? else { continue };
-        if !in_scope(&ctx.cwd, &config.dir) {
-            continue;
-        }
         let in_fragment_dir = file.parent() == Some(config.fragments.directory.as_path());
         let is_new_fragment = in_fragment_dir && is_fragment_file(file) && added_or_modified.contains(file);
 
@@ -73,7 +70,7 @@ pub fn run(ctx: &Context, args: &CheckArgs) -> Result<()> {
                     format!(
                         "this fragment is under {}, which has no [package] table, so no package can release it; \
                          move it to a package's fragment directory",
-                        ctx.display_path(&config.path)
+                        show_path(ctx, &config.path)
                     ),
                 ));
                 continue;
@@ -122,15 +119,15 @@ pub fn run(ctx: &Context, args: &CheckArgs) -> Result<()> {
         reports.push(PackageReport {
             name: config.name().to_string(),
             path: dir_display(ctx, &config.dir),
-            changed: state.changed.iter().map(|p| ctx.display_path(p)).collect(),
-            ignored: state.ignored.iter().map(|p| ctx.display_path(p)).collect(),
-            fragments: state.fragments.iter().map(|p| ctx.display_path(p)).collect(),
+            changed: state.changed.iter().map(|p| show_path(ctx, p)).collect(),
+            ignored: state.ignored.iter().map(|p| show_path(ctx, p)).collect(),
+            fragments: state.fragments.iter().map(|p| show_path(ctx, p)).collect(),
             ok: reason != "missing_fragment",
             reason,
         });
     }
     for (path, message) in &invalid {
-        problems.push(format!("invalid fragment {}: {message}", ctx.display_path(path)));
+        problems.push(format!("invalid fragment {}: {message}", show_path(ctx, path)));
     }
 
     let ok = problems.is_empty();
@@ -142,7 +139,7 @@ pub fn run(ctx: &Context, args: &CheckArgs) -> Result<()> {
             packages: reports,
             invalid_fragments: invalid
                 .iter()
-                .map(|(path, error)| InvalidFragment { path: ctx.display_path(path), error: error.clone() })
+                .map(|(path, error)| InvalidFragment { path: show_path(ctx, path), error: error.clone() })
                 .collect(),
         });
     }
@@ -226,7 +223,8 @@ fn build_globset(globs: &[String]) -> GlobSet {
 
 /// Finds the config for each changed file, loading every config only once.
 struct Resolver {
-    /// `--config`: the config for every file.
+    cwd: PathBuf,
+    /// `--config`: the config for every file, wherever it is.
     fixed: Option<Rc<Config>>,
     /// Directory → config file that applies to it.
     dirs: HashMap<PathBuf, Option<PathBuf>>,
@@ -237,10 +235,18 @@ struct Resolver {
 impl Resolver {
     fn new(ctx: &Context) -> Result<Resolver> {
         let fixed = match &ctx.config_override {
-            Some(path) => Some(Rc::new(config::load(path)?)),
+            Some(path) => {
+                let config = config::load(path)?;
+                if !config.is_package() {
+                    return Err(Error::Usage(
+                        "the config given with --config has no [package] table, so it isn't a package".into(),
+                    ));
+                }
+                Some(Rc::new(config))
+            }
             None => None,
         };
-        Ok(Resolver { fixed, dirs: HashMap::new(), configs: HashMap::new() })
+        Ok(Resolver { cwd: ctx.cwd.clone(), fixed, dirs: HashMap::new(), configs: HashMap::new() })
     }
 
     fn config_for(&mut self, file: &Path) -> Result<Option<Rc<Config>>> {
@@ -259,6 +265,11 @@ impl Resolver {
             }
         };
         let Some(config_path) = config_path else { return Ok(None) };
+        // Only packages at or below the current directory, and the one
+        // containing it, are checked; others aren't even loaded.
+        if !config_path.parent().is_some_and(|dir| in_scope(&self.cwd, dir)) {
+            return Ok(None);
+        }
         if let Some(config) = self.configs.get(&config_path) {
             return Ok(Some(Rc::clone(config)));
         }
@@ -286,8 +297,26 @@ fn relative_slash(path: &Path, dir: &Path) -> String {
 }
 
 fn dir_display(ctx: &Context, dir: &Path) -> String {
-    let shown = ctx.display_path(dir);
+    let shown = show_path(ctx, dir);
     if shown.is_empty() { ".".to_string() } else { shown }
+}
+
+/// `path` relative to the current directory, with `..` when it's outside it
+/// (`Context::display_path` only shortens paths below it), and `/` separators.
+fn show_path(ctx: &Context, path: &Path) -> String {
+    if path.starts_with(&ctx.cwd) {
+        return ctx.display_path(path);
+    }
+    let from: Vec<Component> = ctx.cwd.components().collect();
+    let to: Vec<Component> = path.components().collect();
+    let common = from.iter().zip(&to).take_while(|(a, b)| a == b).count();
+    if common == 0 {
+        // Different roots (e.g. drives): only an absolute path works.
+        return ctx.display_path(path);
+    }
+    let mut parts: Vec<String> = vec!["..".to_string(); from.len() - common];
+    parts.extend(to[common..].iter().map(|c| c.as_os_str().to_string_lossy().into_owned()));
+    parts.join("/")
 }
 
 /// The message of a fragment error, without the path (which the caller shows
@@ -302,7 +331,7 @@ fn error_message(e: Error) -> String {
 fn missing_fragment_message(ctx: &Context, name: &str, changed: &[PathBuf]) -> String {
     let mut message = format!("package `{name}` has changes but no new fragment");
     for path in changed.iter().take(MAX_LISTED) {
-        message.push_str(&format!("\n  changed: {}", ctx.display_path(path)));
+        message.push_str(&format!("\n  changed: {}", show_path(ctx, path)));
     }
     if changed.len() > MAX_LISTED {
         message.push_str(&format!("\n  … and {} more", changed.len() - MAX_LISTED));

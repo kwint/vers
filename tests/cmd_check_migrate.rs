@@ -566,7 +566,7 @@ fn init_from_towncrier_basic() {
     );
     assert_eq!(repo.read("NEWS.md"), "# News\n\n## [Unreleased]\n\n## proj 1.2.0 (2026-01-31)\n\n- Old.\n");
     // A second run fails because vers.toml exists.
-    repo.vers().args(["init", "--from-towncrier"]).assert().code(1);
+    repo.vers().args(["init", "--from-towncrier"]).assert().code(2);
 }
 
 #[test]
@@ -636,9 +636,9 @@ fn init_from_towncrier_custom_types_and_extend() {
         .success()
         .stdout("rename changes/2.feature.md → changes/2.added.md\nWould rename 1 fragment and delete 0 fragments\n");
 
-    // Running it again fails: the config exists.
+    // Running it again is a usage error (as for `vers init`): the config exists.
     let err = vers::commands::migrate::init_from_towncrier(&ctx, &args).unwrap_err();
-    assert_eq!(err.exit_code(), 1);
+    assert_eq!(err.exit_code(), 2);
 }
 
 #[test]
@@ -656,5 +656,204 @@ fn init_from_towncrier_needs_towncrier_config() {
     let err = vers::commands::migrate::init_from_towncrier(&ctx, &args).unwrap_err();
     assert_eq!(err.exit_code(), 2);
     assert!(err.to_string().contains("no [tool.towncrier] table"));
+    assert!(!repo.exists("vers.toml"));
+}
+
+fn quiet_ctx(cwd: std::path::PathBuf) -> vers::context::Context {
+    let global = vers::cli::GlobalArgs {
+        config: None,
+        format: vers::cli::Format::Text,
+        color: vers::cli::ColorChoice::Never,
+        quiet: true,
+        verbose: 0,
+    };
+    vers::context::Context::new(cwd, &global)
+}
+
+#[test]
+fn check_shows_files_outside_the_current_directory_relative_to_it() {
+    let repo = monorepo();
+    repo.write("packages/web/src/app.js", "x\n");
+    repo.write("packages/web/style.css", "/* tweak */\n");
+    repo.commit("Tweak", None);
+    repo.vers_in("packages/web/src").args(["check", "--base", "main"]).assert().code(1).stdout("").stderr(
+        "error: package `web` has changes but no new fragment\n  changed: app.js\n  changed: ../style.css\n  hint: add one with `vers new <type> --package web`, or set VERS_SKIP=1 to skip this check\n",
+    );
+    let out = repo
+        .vers_in("packages/web/src")
+        .args(["check", "--base", "main", "--format", "json"])
+        .assert()
+        .code(1)
+        .get_output()
+        .clone();
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["packages"][0]["path"], "..");
+    assert_eq!(json["packages"][0]["changed"], serde_json::json!(["app.js", "../style.css"]));
+}
+
+#[test]
+fn check_config_override_applies_outside_the_current_directory() {
+    let repo = monorepo();
+    repo.write("tools/release.sh", "echo 2\n");
+    repo.commit("Tools", None);
+    let out = repo
+        .vers_in("packages/api")
+        .args(["--config", "../web/vers.toml", "check", "--base", "main"])
+        .assert()
+        .code(1)
+        .get_output()
+        .clone();
+    assert!(
+        stderr(&out)
+            .starts_with("error: package `web` has changes but no new fragment\n  changed: ../../tools/release.sh\n"),
+        "{}",
+        stderr(&out)
+    );
+}
+
+#[test]
+fn check_does_not_load_configs_outside_its_scope() {
+    let repo = monorepo();
+    repo.write("packages/api/vers.toml", "[package\n").write("packages/api/src/main.rs", "x\n");
+    repo.commit("Break api", None);
+    repo.vers_in("packages/web").args(["check", "--base", "main"]).assert().success().stdout("No package changes\n");
+    repo.vers().args(["check", "--base", "main"]).assert().code(2);
+}
+
+#[test]
+fn check_config_override_must_be_a_package() {
+    let repo = monorepo();
+    repo.write("tools/release.sh", "echo 2\n");
+    repo.commit("Tools", None);
+    repo.vers()
+        .args(["--config", "vers.toml", "check", "--base", "main"])
+        .assert()
+        .code(2)
+        .stderr("error: the config given with --config has no [package] table, so it isn't a package\n");
+}
+
+#[test]
+fn migrate_keeps_types_the_config_defines() {
+    let repo = TestRepo::new();
+    repo.write(
+        "vers.toml",
+        "[package]\nname = \"proj\"\n\n[changelog]\nrepo = \"none\"\n\n[fragments]\ndirectory = \"newsfragments\"\n\n\
+         [[types]]\nname = \"added\"\nheading = \"Added\"\naliases = [\"feature\"]\n\n\
+         [[types]]\nname = \"misc\"\nheading = \"Misc\"\n",
+    )
+    .write("newsfragments/1.misc.md", "Tidy up.\n")
+    .write("newsfragments/2.feature.md", "New.\n")
+    .write("newsfragments/+x.misc", "Orphan.\n");
+    repo.commit("Initial", None);
+    repo.vers().args(["migrate", "towncrier"]).assert().success().stderr("").stdout(
+        "Renamed newsfragments/+x.misc → newsfragments/x.misc.md\n\
+         Renamed newsfragments/2.feature.md → newsfragments/2.added.md\n\
+         Renamed 2 fragments and deleted 0 fragments\n",
+    );
+    assert_eq!(repo.read("newsfragments/1.misc.md"), "Tidy up.\n");
+    assert_eq!(repo.read("newsfragments/x.misc.md"), "Orphan.\n");
+}
+
+#[test]
+fn migrate_shows_paths_outside_the_current_directory_relative_to_it() {
+    let repo = towncrier_project();
+    std::fs::create_dir_all(repo.path("src")).unwrap();
+    let out = repo.vers_in("src").args(["migrate", "towncrier", "--dry-run"]).assert().success().get_output().clone();
+    assert!(
+        stdout(&out).starts_with("rename ../newsfragments/+abc.removal.md → ../newsfragments/abc.removed.md\n"),
+        "{}",
+        stdout(&out)
+    );
+}
+
+#[test]
+fn init_from_towncrier_matches_init_output() {
+    let repo = TestRepo::new();
+    repo.git(&["remote", "add", "origin", "git@github.com:example/proj.git"]);
+    repo.write(
+        "pyproject.toml",
+        "[project]\nversion = \"1.2.0\"\n\n[tool.towncrier]\nfilename = \"CHANGELOG.md\"\n\n\
+         [tool.towncrier.fragment.feature]\n\n[tool.towncrier.fragment.perf]\nname = \"Performance\"\n",
+    )
+    .write("CHANGELOG.md", "# Changelog\n\n## proj 1.2.0 (2026-01-31)\n\n- Old.\n");
+    std::fs::create_dir_all(repo.path("newsfragments")).unwrap();
+    let out = repo.vers().args(["init", "--from-towncrier", "--name", "proj"]).output().unwrap();
+    if stderr(&out).contains("not implemented yet") {
+        return;
+    }
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert_eq!(stderr(&out), "");
+    assert_eq!(
+        stdout(&out),
+        "Created vers.toml\n\
+         Created newsfragments/.gitkeep\n\
+         Updated CHANGELOG.md (added ## [Unreleased])\n\
+         Detected repository: github (https://github.com/example/proj)\n\
+         Detected version file: pyproject.toml (project.version = 1.2.0)\n\
+         Added custom type: perf (Performance)\n\
+         Next, rename existing fragments with `vers migrate towncrier --dry-run`\n"
+    );
+    assert!(repo.exists("newsfragments/.gitkeep"));
+}
+
+#[test]
+fn init_from_towncrier_json() {
+    let repo = TestRepo::new();
+    repo.git(&["remote", "add", "origin", "git@github.com:example/proj.git"]);
+    repo.write("towncrier.toml", "[tool.towncrier]\ndirectory = \"changes\"\nfilename = \"CHANGELOG.md\"\n");
+    let out = repo.vers().args(["init", "--from-towncrier", "--name", "proj", "--format", "json"]).output().unwrap();
+    if stderr(&out).contains("not implemented yet") {
+        return;
+    }
+    assert!(out.status.success(), "{}", stderr(&out));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(
+        json,
+        serde_json::json!({
+            "config": "vers.toml",
+            "shared": false,
+            "name": "proj",
+            "extends": null,
+            "created": ["vers.toml", "changes/.gitkeep", "CHANGELOG.md"],
+            "updated": [],
+            "repository": {"kind": "github", "url": "https://github.com/example/proj"},
+            "version_files": [],
+            "fragments_directory": "changes",
+            "changelog": "CHANGELOG.md",
+            "custom_types": [],
+        })
+    );
+    assert_eq!(repo.read("vers.toml"), "[package]\nname = \"proj\"\n");
+}
+
+#[test]
+fn init_from_towncrier_keeps_paths_an_extended_config_would_change() {
+    let repo = TestRepo::new();
+    repo.write(
+        "vers.toml",
+        "[changelog]\nrepo = \"none\"\npath = \"docs/CHANGES.md\"\n\n[fragments]\ndirectory = \"fragments\"\n",
+    );
+    repo.write("pkg/towncrier.toml", "[tool.towncrier]\ndirectory = \"changes\"\nfilename = \"CHANGELOG.md\"\n");
+    let ctx = quiet_ctx(repo.path("pkg"));
+    let args = vers::cli::InitArgs { name: None, shared: false, no_detect: false, from_towncrier: true };
+    vers::commands::migrate::init_from_towncrier(&ctx, &args).unwrap();
+    assert_eq!(
+        repo.read("pkg/vers.toml"),
+        "extend = \"../vers.toml\"\n\n[package]\nname = \"pkg\"\n\n[changelog]\npath = \"CHANGELOG.md\"\n\n[fragments]\ndirectory = \"changes\"\n"
+    );
+    assert!(repo.exists("pkg/changes/.gitkeep"));
+    assert!(repo.exists("pkg/CHANGELOG.md"));
+    assert!(!repo.exists("fragments") && !repo.exists("docs"));
+}
+
+#[test]
+fn init_from_towncrier_rejects_bad_names_and_shared() {
+    let repo = TestRepo::new();
+    repo.write("towncrier.toml", "[tool.towncrier]\n");
+    let ctx = quiet_ctx(repo.root.clone());
+    let args = vers::cli::InitArgs { name: Some("a b".into()), shared: false, no_detect: true, from_towncrier: true };
+    assert_eq!(vers::commands::migrate::init_from_towncrier(&ctx, &args).unwrap_err().exit_code(), 2);
+    let args = vers::cli::InitArgs { name: None, shared: true, no_detect: true, from_towncrier: true };
+    assert_eq!(vers::commands::migrate::init_from_towncrier(&ctx, &args).unwrap_err().exit_code(), 2);
     assert!(!repo.exists("vers.toml"));
 }

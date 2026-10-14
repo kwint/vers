@@ -192,12 +192,18 @@ pub fn custom_type(t: &TowncrierType) -> Option<(String, String)> {
 }
 
 /// The vers target for a type found in a fragment filename: `--map`
-/// overrides, then the default mapping, then the config's own types (which
-/// covers custom types written by `vers init --from-towncrier`).
+/// overrides, then a config type with exactly that name, then the default
+/// mapping, then the config's own types and aliases (which covers custom
+/// types written by `vers init --from-towncrier`).
 pub fn target_for(tc_type: &str, overrides: &[(String, Target)], config: &Config) -> Option<Target> {
     let lower = tc_type.to_ascii_lowercase();
     if let Some((_, target)) = overrides.iter().find(|(from, _)| *from == lower) {
         return Some(target.clone());
+    }
+    // A type the config defines under exactly this name keeps it, so a
+    // `misc` or `doc` type added to vers.toml isn't dropped or renamed.
+    if let Some(t) = config.types.iter().find(|t| t.name.eq_ignore_ascii_case(tc_type)) {
+        return Some(Target::Type(t.name.clone()));
     }
     if let Some(target) = DEFAULT_MAP.iter().find(|(from, _)| *from == lower).map(|(_, t)| match t {
         Some(t) => Target::Type((*t).to_string()),

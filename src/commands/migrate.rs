@@ -3,6 +3,7 @@
 //! Spec: `docs/how-to/migrate-from-towncrier.md`, `docs/reference/cli.md`.
 
 mod headings;
+mod init;
 mod towncrier;
 
 use std::collections::HashSet;
@@ -11,9 +12,9 @@ use std::path::{Path, PathBuf};
 
 use serde::Serialize;
 
-use crate::changelog::{Changelog, NEW_CHANGELOG};
+use crate::changelog::Changelog;
 use crate::cli::{InitArgs, MigrateTowncrierArgs};
-use crate::config::{self, CONFIG_FILENAMES, Config};
+use crate::config::{self, Config};
 use crate::context::Context;
 use crate::error::{Error, Result};
 use crate::fragment;
@@ -62,12 +63,12 @@ pub fn run(ctx: &Context, args: &MigrateTowncrierArgs) -> Result<()> {
     for action in &plan {
         match &action.to {
             Some(to) => {
-                let line = format!("{} → {}", ctx.display_path(&action.from), ctx.display_path(to));
+                let line = format!("{} → {}", show_path(ctx, &action.from), show_path(ctx, to));
                 ctx.line(if args.dry_run { format!("rename {line}") } else { format!("Renamed {line}") });
-                report.renamed.push(Rename { from: ctx.display_path(&action.from), to: ctx.display_path(to) });
+                report.renamed.push(Rename { from: show_path(ctx, &action.from), to: show_path(ctx, to) });
             }
             None => {
-                let shown = ctx.display_path(&action.from);
+                let shown = show_path(ctx, &action.from);
                 ctx.line(if args.dry_run { format!("delete {shown}") } else { format!("Deleted {shown}") });
                 report.deleted.push(shown);
             }
@@ -83,13 +84,13 @@ pub fn run(ctx: &Context, args: &MigrateTowncrierArgs) -> Result<()> {
         if empty {
             ctx.warn(format!(
                 "{} has no text; vers needs a sentence describing the change before it can release it",
-                ctx.display_path(to)
+                show_path(ctx, to)
             ));
         }
         if action.from.extension().is_some_and(|e| e == "rst") {
             ctx.warn(format!(
                 "{} was written as reStructuredText; vers renders Markdown, so check its formatting",
-                ctx.display_path(to)
+                show_path(ctx, to)
             ));
         }
     }
@@ -140,7 +141,7 @@ fn count(n: usize, noun: &str) -> String {
 }
 
 fn dir_display(ctx: &Context, dir: &Path) -> String {
-    let shown = ctx.display_path(dir);
+    let shown = show_path(ctx, dir);
     if shown.is_empty() { ".".to_string() } else { shown }
 }
 
@@ -194,9 +195,14 @@ fn migration_config(ctx: &Context, towncrier: Option<&TowncrierConfig>) -> Resul
     Ok(config)
 }
 
+/// `rel` (a `/`- or `\`-separated path from a towncrier setting) resolved
+/// against `base`, lexically. An absolute `rel` is used as it is.
 fn join_slash(base: &Path, rel: &str) -> PathBuf {
+    if Path::new(rel).is_absolute() {
+        return PathBuf::from(rel);
+    }
     let mut path = base.to_path_buf();
-    for part in rel.split('/').filter(|p| !p.is_empty() && *p != ".") {
+    for part in rel.split(['/', '\\']).filter(|p| !p.is_empty() && *p != ".") {
         if part == ".." {
             path.pop();
         } else {
@@ -373,8 +379,13 @@ fn execute(plan: &[Action], git: Option<&Git>) -> Result<()> {
             }
             None => {
                 let (from, to) = pending.remove(0);
-                temp += 1;
-                let tmp = from.with_file_name(format!(".vers-migrate-{temp}.tmp"));
+                let tmp = loop {
+                    temp += 1;
+                    let tmp = from.with_file_name(format!(".vers-migrate-{temp}.tmp"));
+                    if !tmp.exists() {
+                        break tmp;
+                    }
+                };
                 rename(&from, &tmp, git)?;
                 pending.push((tmp, to));
             }
@@ -393,12 +404,22 @@ fn tracked(path: &Path, git: Option<&Git>) -> Result<Option<Git>> {
 fn rename(from: &Path, to: &Path, git: Option<&Git>) -> Result<()> {
     match tracked(from, git)? {
         Some(git) => {
+            // Root-relative `/` paths, since git runs in the root.
             let args: Vec<OsString> =
-                vec!["mv".into(), "--".into(), from.as_os_str().to_owned(), to.as_os_str().to_owned()];
+                vec!["mv".into(), "--".into(), root_relative(&git, from), root_relative(&git, to)];
             git.run(args)?;
             Ok(())
         }
         None => std::fs::rename(from, to).map_err(|e| Error::io(from, e)),
+    }
+}
+
+/// `path` relative to the working tree root with `/` separators, or as given
+/// when it isn't below the root.
+fn root_relative(git: &Git, path: &Path) -> OsString {
+    match path.strip_prefix(git.root()) {
+        Ok(rel) => rel.components().map(|c| c.as_os_str().to_string_lossy()).collect::<Vec<_>>().join("/").into(),
+        Err(_) => path.as_os_str().to_owned(),
     }
 }
 
@@ -411,7 +432,7 @@ fn remove(path: &Path, git: Option<&Git>) -> Result<()> {
 
 /// `--changelog`: rewrite towncrier release headings and add `## [Unreleased]`.
 fn migrate_changelog(ctx: &Context, path: &Path, dry_run: bool) -> Result<ChangelogReport> {
-    let shown = ctx.display_path(path);
+    let shown = show_path(ctx, path);
     let Some(old) = Changelog::load(path)? else {
         ctx.warn(format!("{shown} doesn't exist, so there are no release headings to convert"));
         return Ok(ChangelogReport { path: shown, changed: false, diff: String::new() });
@@ -438,219 +459,32 @@ fn migrate_changelog(ctx: &Context, path: &Path, dry_run: bool) -> Result<Change
     Ok(ChangelogReport { path: shown, changed: true, diff })
 }
 
-// ---------------------------------------------------------------------------
-// vers init --from-towncrier
-// ---------------------------------------------------------------------------
-
 /// `vers init --from-towncrier`: called by the init command.
 pub fn init_from_towncrier(ctx: &Context, args: &InitArgs) -> Result<()> {
-    if args.shared {
-        return Err(Error::Usage(
-            "--from-towncrier creates a package config, so it can't be used with --shared".into(),
-        ));
-    }
-    let dir = &ctx.cwd;
-    if let Some(existing) = CONFIG_FILENAMES.iter().map(|n| dir.join(n)).find(|p| p.is_file()) {
-        return Err(Error::Failed(format!(
-            "{} already exists; edit it instead, or remove it to start over",
-            ctx.display_path(&existing)
-        )));
-    }
-    let tc = towncrier::read(dir)?.ok_or_else(|| {
-        Error::Usage("no [tool.towncrier] table found in pyproject.toml or towncrier.toml in this directory".into())
-    })?;
-
-    let name = match &args.name {
-        Some(name) => name.clone(),
-        None => dir.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "package".into()),
-    };
-    let extend = dir.parent().map(config::find_config_for).transpose()?.flatten();
-    let extend_rel = extend.as_ref().map(|p| relative_slash(dir, p));
-
-    let changelog = if is_markdown(&tc.filename) {
-        tc.filename.replace('\\', "/")
-    } else {
-        ctx.warn(format!(
-            "towncrier writes {}, but vers only writes Markdown; using CHANGELOG.md instead",
-            tc.filename
-        ));
-        "CHANGELOG.md".to_string()
-    };
-
-    let customs: Vec<(String, String)> = tc.types.iter().filter_map(towncrier::custom_type).collect();
-    let version_file = if args.no_detect { None } else { pyproject_version(ctx, dir)? };
-
-    // vers.toml
-    let mut toml = String::new();
-    if let Some(rel) = &extend_rel {
-        toml.push_str(&format!("extend = {}\n\n", quote(rel)));
-    }
-    toml.push_str(&format!("[package]\nname = {}\n", quote(&name)));
-    if changelog != "CHANGELOG.md" {
-        toml.push_str(&format!("\n[changelog]\npath = {}\n", quote(&changelog)));
-    }
-    if tc.directory != "changes" {
-        toml.push_str(&format!("\n[fragments]\ndirectory = {}\n", quote(&tc.directory)));
-    }
-    if !customs.is_empty() {
-        for t in config::default_types() {
-            toml.push_str(&format!("\n[[types]]\nname = {}\nheading = {}\n", quote(&t.name), quote(&t.heading)));
-            if !t.aliases.is_empty() {
-                let aliases: Vec<String> = t.aliases.iter().map(|a| quote(a)).collect();
-                toml.push_str(&format!("aliases = [{}]\n", aliases.join(", ")));
-            }
-            toml.push_str(&format!("bump = {}\n", quote(&t.bump.to_string())));
-        }
-        for (type_name, heading) in &customs {
-            toml.push_str(&format!(
-                "\n[[types]]\nname = {}\nheading = {}\nbump = \"patch\"\n",
-                quote(type_name),
-                quote(heading)
-            ));
-        }
-    }
-    if let Some((key, _)) = &version_file {
-        toml.push_str(&format!("\n[[version.files]]\npath = \"pyproject.toml\"\nkey = {}\n", quote(key)));
-    }
-
-    let config_path = dir.join("vers.toml");
-    std::fs::write(&config_path, &toml).map_err(|e| Error::io(&config_path, e))?;
-    let mut created = vec![ctx.display_path(&config_path)];
-    match &extend_rel {
-        Some(rel) => ctx.line(format!("Created vers.toml (extends {rel})")),
-        None => ctx.line("Created vers.toml"),
-    }
-
-    let config = match config::load(&config_path) {
-        Ok(config) => config,
-        Err(e) => {
-            let _ = std::fs::remove_file(&config_path);
-            return Err(e);
-        }
-    };
-
-    let fragments_dir = &config.fragments.directory;
-    if !fragments_dir.exists() {
-        let gitkeep = fragments_dir.join(".gitkeep");
-        std::fs::create_dir_all(fragments_dir).map_err(|e| Error::io(fragments_dir, e))?;
-        std::fs::write(&gitkeep, "").map_err(|e| Error::io(&gitkeep, e))?;
-        ctx.line(format!("Created {}", ctx.display_path(&gitkeep)));
-        created.push(ctx.display_path(&gitkeep));
-    }
-
-    let changelog_path = &config.changelog.path;
-    let mut updated = Vec::new();
-    match Changelog::load(changelog_path)? {
-        None => {
-            if let Some(parent) = changelog_path.parent() {
-                std::fs::create_dir_all(parent).map_err(|e| Error::io(parent, e))?;
-            }
-            std::fs::write(changelog_path, NEW_CHANGELOG).map_err(|e| Error::io(changelog_path, e))?;
-            ctx.line(format!("Created {}", ctx.display_path(changelog_path)));
-            created.push(ctx.display_path(changelog_path));
-        }
-        Some(mut changelog) => {
-            if changelog.ensure_unreleased() {
-                std::fs::write(changelog_path, changelog.as_str()).map_err(|e| Error::io(changelog_path, e))?;
-                ctx.line(format!("Added ## [Unreleased] to {}", ctx.display_path(changelog_path)));
-                updated.push(ctx.display_path(changelog_path));
-            }
-        }
-    }
-
-    if let Some((key, version)) = &version_file {
-        ctx.line(format!("Detected version file: pyproject.toml ({key} = {version})"));
-    }
-    for (type_name, heading) in &customs {
-        ctx.line(format!("Added custom type: {type_name} ({heading})"));
-    }
-    ctx.line("Next, rename existing fragments with `vers migrate towncrier --dry-run`");
-
-    if ctx.json_output() {
-        ctx.json(&InitReport {
-            config: ctx.display_path(&config_path),
-            name: name.clone(),
-            extends: extend_rel,
-            created,
-            updated,
-            fragments_directory: dir_display(ctx, fragments_dir),
-            changelog: ctx.display_path(changelog_path),
-            version_files: version_file
-                .iter()
-                .map(|(key, version)| VersionFileReport {
-                    path: "pyproject.toml".into(),
-                    key: key.clone(),
-                    version: version.clone(),
-                })
-                .collect(),
-            custom_types: customs.iter().map(|(n, _)| n.clone()).collect(),
-        });
-    }
-    Ok(())
+    init::run(ctx, args)
 }
 
-#[derive(Serialize)]
-struct InitReport {
-    config: String,
-    name: String,
-    extends: Option<String>,
-    created: Vec<String>,
-    updated: Vec<String>,
-    fragments_directory: String,
-    changelog: String,
-    version_files: Vec<VersionFileReport>,
-    custom_types: Vec<String>,
-}
-
-#[derive(Serialize)]
-struct VersionFileReport {
-    path: String,
-    key: String,
-    version: String,
-}
-
-/// `project.version` or `tool.poetry.version` in `pyproject.toml`, as
-/// `(key, version)`. A dynamic or non-SemVer version is skipped.
-fn pyproject_version(ctx: &Context, dir: &Path) -> Result<Option<(String, String)>> {
-    let Some(table) = towncrier::read_toml(&dir.join("pyproject.toml"))? else { return Ok(None) };
-    for key in ["project.version", "tool.poetry.version"] {
-        let mut value: Option<&toml::Value> = None;
-        let mut table_ref = Some(&table);
-        let parts: Vec<&str> = key.split('.').collect();
-        for (i, part) in parts.iter().enumerate() {
-            let Some(t) = table_ref else { break };
-            let v = t.get(*part);
-            if i == parts.len() - 1 {
-                value = v;
-            } else {
-                table_ref = v.and_then(toml::Value::as_table);
-            }
-        }
-        let Some(version) = value.and_then(toml::Value::as_str) else { continue };
-        if semver::Version::parse(version).is_err() {
-            ctx.warn(format!(
-                "pyproject.toml has version `{version}` ({key}), which isn't a SemVer version, so it isn't added as a version file"
-            ));
-            return Ok(None);
-        }
-        return Ok(Some((key.to_string(), version.to_string())));
+/// `path` for display: relative to the current directory (with `..` when it's
+/// outside it), with `/` separators.
+fn show_path(ctx: &Context, path: &Path) -> String {
+    if path.starts_with(&ctx.cwd) {
+        return ctx.display_path(path);
     }
-    Ok(None)
+    relative_slash(&ctx.cwd, path).unwrap_or_else(|| ctx.display_path(path))
 }
 
-/// A TOML basic string.
-fn quote(s: &str) -> String {
-    toml::Value::String(s.to_string()).to_string()
-}
-
-/// The path from directory `from` to file `to`, with `/` separators.
-fn relative_slash(from: &Path, to: &Path) -> String {
+/// The path from directory `from` to `to`, with `/` separators. `None` when
+/// they share no root (different Windows drives).
+fn relative_slash(from: &Path, to: &Path) -> Option<String> {
     let from: Vec<_> = from.components().collect();
     let to_parts: Vec<_> = to.components().collect();
     let common = from.iter().zip(&to_parts).take_while(|(a, b)| a == b).count();
+    if common == 0 {
+        return None;
+    }
     let mut parts: Vec<String> = vec!["..".to_string(); from.len() - common];
     parts.extend(to_parts[common..].iter().map(|c| c.as_os_str().to_string_lossy().into_owned()));
-    parts.join("/")
+    Some(parts.join("/"))
 }
 
 #[cfg(test)]
@@ -677,6 +511,8 @@ mod tests {
 
     #[test]
     fn relative_paths() {
-        assert_eq!(relative_slash(Path::new("/a/b/c"), Path::new("/a/vers.toml")), "../../vers.toml");
+        let base = std::env::temp_dir();
+        let from = base.join("a").join("b").join("c");
+        assert_eq!(relative_slash(&from, &base.join("a").join("vers.toml")).unwrap(), "../../vers.toml");
     }
 }
