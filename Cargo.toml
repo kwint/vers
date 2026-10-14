@@ -18,7 +18,14 @@ path = "src/lib.rs"
 name = "vers"
 path = "src/main.rs"
 
+[features]
+default = ["self-update"]
+# `vers self update` for installs made by the standalone installers. Distro and
+# package-manager builds can turn it off with `--no-default-features`.
+self-update = ["dep:axoupdater"]
+
 [dependencies]
+axoupdater = { version = "0.10.2", features = ["blocking"], optional = true }
 clap = { version = "4.6.7", features = ["derive", "env"] }
 clap_complete = "4.6.11"
 globset = "0.4.20"
