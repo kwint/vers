@@ -11,7 +11,7 @@ with fragments and `vers release`.
 
 ```console
 $ mkdir shop && cd shop
-$ git init -b main
+$ git init -q -b main
 $ git remote add origin https://gitlab.com/example/shop.git
 $ mkdir -p packages/api packages/web
 $ printf '[package]\nname = "api"\nversion = "1.4.0"\n' > packages/api/Cargo.toml
@@ -144,7 +144,7 @@ Make a change in `web` without a fragment:
 
 ```console
 $ git add -A && git commit -qm "Release api 1.5.0"
-$ git switch -c tweak-styles
+$ git switch -q -c tweak-styles
 $ echo "/* tweak */" > packages/web/style.css
 $ git add -A && git commit -qm "Tweak styles"
 $ vers check --base main

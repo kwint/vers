@@ -233,6 +233,7 @@ package manager.
 | `VERS_SKIP` | When set to `1`, `vers check` passes without checking. |
 | `VISUAL`, `EDITOR` | Editor used by `vers new` when `-m` isn't given. |
 | `NO_COLOR` | Turns off coloured output. |
+| `SOURCE_DATE_EPOCH` | Release date to use instead of today, as seconds since the epoch, for reproducible output. |
 | `GITHUB_BASE_REF`, `CI_MERGE_REQUEST_DIFF_BASE_SHA` | Default base for `vers check`. |
 
 ## JSON output

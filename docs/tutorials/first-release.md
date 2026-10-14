@@ -15,7 +15,7 @@ project is written in.
 
 ```console
 $ mkdir greeter && cd greeter
-$ git init
+$ git init -q
 $ git remote add origin https://github.com/example/greeter.git
 $ echo "0.1.0" > VERSION
 ```
@@ -51,7 +51,7 @@ the standard Keep a Changelog header and an empty `## [Unreleased]` section.
 Commit the setup:
 
 ```console
-$ git add . && git commit -m "Set up vers"
+$ git add . && git commit -qm "Set up vers"
 ```
 
 ## 3. Record your first changes
@@ -124,7 +124,7 @@ vers doesn't commit anything unless you tell it to, so review the changes and
 commit them yourself:
 
 ```console
-$ git add -A && git commit -m "Release 0.1.0"
+$ git add -A && git commit -qm "Release 0.1.0"
 ```
 
 ## 6. Make a second release
