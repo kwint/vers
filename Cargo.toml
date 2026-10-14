@@ -9,6 +9,20 @@ repository = "https://github.com/kwint/vers"
 readme = "README.md"
 keywords = ["changelog", "semver", "release", "monorepo", "towncrier"]
 categories = ["command-line-utilities", "development-tools"]
+homepage = "https://kwint.github.io/vers/"
+documentation = "https://kwint.github.io/vers/"
+# The tests run the tutorials in docs/tutorials, so ship those with the tests
+# and `cargo test` works from the published crate.
+include = [
+    "/src/**",
+    "/tests/**",
+    "/docs/tutorials/**",
+    "/Cargo.toml",
+    "/Cargo.lock",
+    "/CHANGELOG.md",
+    "/LICENSE",
+    "/README.md",
+]
 
 [lib]
 name = "vers"
