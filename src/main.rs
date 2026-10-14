@@ -14,7 +14,7 @@ fn main() -> ExitCode {
             return ExitCode::from(2);
         }
     };
-    let ctx = Context::new(cwd, &cli.global);
+    let ctx = Context::new(vers::git::canonicalize(&cwd), &cli.global);
     match vers::commands::run(&ctx, &cli.command) {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {

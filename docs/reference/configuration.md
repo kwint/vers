@@ -37,7 +37,8 @@ required_version = ">=1.2, <2"
 
 **This table's presence makes the directory a package.** Without it, the config
 only provides settings for others to `extend`, and fragments under it are an
-error. An empty `[package]` table is enough.
+error. An empty `[package]` table is enough. The table belongs to the file itself: it is never
+inherited through `extend`.
 
 | Key | Type | Default | Description |
 |---|---|---|---|

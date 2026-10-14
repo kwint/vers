@@ -434,6 +434,14 @@ fn join_slash(mut base: PathBuf, rel: &[u8]) -> PathBuf {
 /// Drop the `\\?\` prefix that `canonicalize` adds on Windows when the path
 /// can be written without it, so the root compares equal to paths built from
 /// `current_dir()` and config files. Other platforms are unchanged.
+/// Canonicalise `path` the same way [`Git::root`] is, so paths built from it
+/// compare equal to paths reported by git: symlinks resolved (macOS `/var` →
+/// `/private/var`) and, on Windows, without the `\\?\` prefix. Returns the
+/// path unchanged if it can't be canonicalised.
+pub fn canonicalize(path: &Path) -> PathBuf {
+    path.canonicalize().map(simplify_verbatim).unwrap_or_else(|_| path.to_path_buf())
+}
+
 fn simplify_verbatim(path: PathBuf) -> PathBuf {
     if cfg!(windows)
         && let Some(simple) = path.to_str().and_then(strip_verbatim)
