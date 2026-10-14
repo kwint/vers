@@ -29,7 +29,7 @@ struct Env {
 impl Env {
     fn new() -> Env {
         let tmp = tempfile::tempdir().unwrap();
-        let dir = tmp.path().canonicalize().unwrap();
+        let dir = crate::git::canonicalize(tmp.path());
         let mut config = Config::default_for(&dir, "pkg").with_repo(RepoKind::Gitlab, "https://gitlab.example.com/g/p");
         config.refs.push(jira());
         std::fs::create_dir_all(&config.fragments.directory).unwrap();
@@ -38,7 +38,7 @@ impl Env {
 
     fn plain() -> Env {
         let tmp = tempfile::tempdir().unwrap();
-        let dir = tmp.path().canonicalize().unwrap();
+        let dir = crate::git::canonicalize(tmp.path());
         let config = Config::default_for(&dir, "pkg");
         std::fs::create_dir_all(&config.fragments.directory).unwrap();
         Env { _tmp: tmp, config }

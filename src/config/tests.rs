@@ -14,7 +14,7 @@ struct Tmp {
 impl Tmp {
     fn new() -> Tmp {
         let dir = tempfile::tempdir().unwrap();
-        let root = resolve::absolute(&dir.path().canonicalize().unwrap()).join("ws");
+        let root = resolve::absolute(&crate::git::canonicalize(dir.path())).join("ws");
         std::fs::create_dir_all(&root).unwrap();
         std::fs::write(root.join(".git"), "gitdir: does-not-exist\n").unwrap();
         Tmp { _dir: dir, root }

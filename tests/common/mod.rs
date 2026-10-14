@@ -20,10 +20,8 @@ impl TestRepo {
     /// A new, empty git repository on branch `main`.
     pub fn new() -> TestRepo {
         let tmp = tempfile::tempdir().unwrap();
-        let root = tmp.path().join("repo").canonicalize().unwrap_or_else(|_| {
-            std::fs::create_dir_all(tmp.path().join("repo")).unwrap();
-            tmp.path().join("repo").canonicalize().unwrap()
-        });
+        std::fs::create_dir_all(tmp.path().join("repo")).unwrap();
+        let root = vers::git::canonicalize(&tmp.path().join("repo"));
         let home = tmp.path().join("home");
         std::fs::create_dir_all(&home).unwrap();
         let repo = TestRepo { _tmp: tmp, home, root };
@@ -35,7 +33,7 @@ impl TestRepo {
     pub fn without_git() -> TestRepo {
         let tmp = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(tmp.path().join("repo")).unwrap();
-        let root = tmp.path().join("repo").canonicalize().unwrap();
+        let root = vers::git::canonicalize(&tmp.path().join("repo"));
         let home = tmp.path().join("home");
         std::fs::create_dir_all(&home).unwrap();
         TestRepo { _tmp: tmp, home, root }
@@ -117,5 +115,5 @@ impl TestRepo {
 }
 
 pub fn assert_path_eq(a: &Path, b: &Path) {
-    assert_eq!(a.canonicalize().unwrap(), b.canonicalize().unwrap());
+    assert_eq!(vers::git::canonicalize(a), vers::git::canonicalize(b));
 }

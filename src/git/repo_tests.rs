@@ -50,7 +50,7 @@ impl Repo {
     /// A new repository on branch `main` with no commits.
     fn new() -> Repo {
         let tmp = tempfile::tempdir().unwrap();
-        let dir = tmp.path().canonicalize().unwrap();
+        let dir = crate::git::canonicalize(tmp.path());
         let root = dir.join("repo");
         std::fs::create_dir_all(&root).unwrap();
         std::fs::create_dir_all(dir.join("home")).unwrap();
@@ -163,7 +163,7 @@ fn depth_one_clone_is_shallow() {
     let url = if src.starts_with('/') { format!("file://{src}") } else { format!("file:///{src}") };
     let clone_dir = repo.dir.join("clone");
     repo.sh(&["clone", "-q", "--depth", "1", &url, clone_dir.to_str().unwrap()]);
-    let clone = Git { root: clone_dir.canonicalize().unwrap(), env: repo.git.env.clone() };
+    let clone = Git { root: crate::git::canonicalize(&clone_dir), env: repo.git.env.clone() };
     assert!(clone.is_shallow().unwrap());
 
     // History is cut off: a.txt appears to be added by the only commit there is.
@@ -223,7 +223,7 @@ fn added_times_cover_subdirs_several_dirs_and_odd_names() {
     let repo = Repo::new();
     repo.write("api/changes/nested/deep.added.md", "Deep.");
     repo.write("api/changes/héllo wörld ✨.fixed.md", "Unicode.");
-    repo.write("api/changes/[glob]*.md", "Glob chars.");
+    repo.write("api/changes/[glob]+.md", "Glob chars.");
     repo.write("web/changes/1.added.md", "Web.");
     repo.write("other/changes/ignored.md", "Not asked for.");
     repo.write("api/src/lib.rs", "code");
@@ -239,7 +239,7 @@ fn added_times_cover_subdirs_several_dirs_and_odd_names() {
     let expected: HashMap<PathBuf, i64> = [
         (repo.path("api/changes/nested/deep.added.md"), t),
         (repo.path("api/changes/héllo wörld ✨.fixed.md"), t),
-        (repo.path("api/changes/[glob]*.md"), t),
+        (repo.path("api/changes/[glob]+.md"), t),
         (repo.path("web/changes/1.added.md"), t),
     ]
     .into_iter()
@@ -583,10 +583,10 @@ fn commit_paths_with_odd_names() {
     let repo = Repo::new();
     repo.write("README.md", "r");
     repo.commit_all("init", DEFAULT_DATE);
-    repo.write("ünïcödé dir/[v]*.md", "glob");
+    repo.write("ünïcödé dir/[v]+.md", "glob");
     repo.write("v.md", "must stay uncommitted");
-    repo.git.commit_paths(&[repo.path("ünïcödé dir/[v]*.md")], "odd").unwrap();
-    assert_eq!(repo.head_changes(), vec!["A\tünïcödé dir/[v]*.md"]);
+    repo.git.commit_paths(&[repo.path("ünïcödé dir/[v]+.md")], "odd").unwrap();
+    assert_eq!(repo.head_changes(), vec!["A\tünïcödé dir/[v]+.md"]);
     assert_eq!(repo.status(), vec!["?? v.md"]);
 }
 
