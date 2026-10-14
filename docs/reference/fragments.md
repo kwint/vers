@@ -16,7 +16,7 @@ default) that describes one change.
 | `counter` | Optional positive integer, so you can have several fragments with the same name and type. |
 
 Files in the fragment directory that don't end in `.md` are ignored, including
-`.gitkeep`. Subdirectories aren't searched.
+`.gitkeep`. So is `README.md`, so you can explain the directory to contributors. Subdirectories aren't searched.
 
 ## References
 

@@ -216,8 +216,8 @@ fn unmatched_ref_message(name: &str, kinds: &[RefKind]) -> String {
 /// missing directory means no fragments. Returns fragments in filename order;
 /// use [`sort`] for release order.
 ///
-/// Files that don't end in `.md` (such as `.gitkeep`) and subdirectories are
-/// ignored. A `.md` file whose name doesn't fit the fragment grammar is an
+/// Files that don't end in `.md` (such as `.gitkeep`), `README.md` and
+/// subdirectories are ignored. A `.md` file whose name doesn't fit the fragment grammar is an
 /// error. When several files are invalid, the first in filename order is
 /// reported.
 pub fn load_all(config: &Config) -> Result<Vec<Fragment>> {
@@ -235,7 +235,8 @@ pub fn load_all(config: &Config) -> Result<Vec<Fragment>> {
             continue;
         }
         let name = entry.file_name();
-        if !name.to_string_lossy().ends_with(".md") {
+        let name = name.to_string_lossy();
+        if !name.ends_with(".md") || name.eq_ignore_ascii_case("README.md") {
             continue;
         }
         paths.push(path);

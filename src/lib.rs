@@ -13,6 +13,7 @@ pub mod context;
 pub mod error;
 pub mod fragment;
 pub mod git;
+pub mod plan;
 pub mod version;
 
 pub use error::{Error, Result};
