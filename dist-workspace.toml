@@ -35,7 +35,7 @@ npm-package = "vers-changelog"
 # of dist's token-based jobs. Each workflow is .github/workflows/<name>.yml.
 publish-jobs = ["./publish-crates", "./publish-pypi", "./publish-npm"]
 # Run `dist plan` on pull requests so the release config is checked without releasing
-pr-run-mode = "plan"
+pr-run-mode = "upload"
 
 # Permissions for the publish jobs above: read the repository, and get an OIDC
 # token for trusted publishing.
